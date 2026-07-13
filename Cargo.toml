@@ -8,3 +8,8 @@ bhttp = "0.7.2"
 ohttp = "0.7.2"
 thiserror = "2"
 url = "2"
+
+[dev-dependencies]
+bitreq = "0.3.7"
+ohttp-relay = "0.0.11"
+tokio = { version = "1", features = ["rt-multi-thread"] }
