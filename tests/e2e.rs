@@ -76,7 +76,13 @@ fn e2e_send_with_bitreq_feature() {
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let response = runtime
-        .block_on(client.send("POST", &[("content-type", "text/plain")], Some(b"hello")))
+        .block_on(
+            client
+                .post()
+                .header("content-type", "text/plain")
+                .body("hello")
+                .send(),
+        )
         .unwrap();
 
     assert_eq!(response.status(), 200);
