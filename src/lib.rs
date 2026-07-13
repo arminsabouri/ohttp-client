@@ -31,8 +31,9 @@
 //! # }
 //! ```
 //!
-//! With the optional `bitreq` feature, a request builder does steps 2 and 3
-//! for you, sending the outer request asynchronously via `bitreq`:
+//! With the optional `bitreq` feature, `bitreq` can also do the IO for you:
+//! `Builder::fetch_key_config` fetches step 1 asynchronously, and a request
+//! builder does steps 2 and 3:
 //! `client.post().header("content-type", "text/plain").body("hello").send().await?`.
 
 use std::io::Cursor;
@@ -79,6 +80,18 @@ pub fn parse_key_config(bytes: &[u8]) -> Result<KeyConfig, Error> {
 fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(ohttp::init);
+}
+
+/// GET the gateway's key endpoint with `bitreq` and parse the result.
+///
+/// Available with the `bitreq` feature.
+#[cfg(feature = "bitreq")]
+pub async fn fetch_key_config(gateway_key_url: &str) -> Result<KeyConfig, Error> {
+    let res = bitreq::get(gateway_key_url).send_async().await?;
+    if res.status_code != 200 {
+        return Err(Error::UnexpectedStatus(res.status_code));
+    }
+    parse_key_config(res.as_bytes())
 }
 
 /// An OHTTP client bound to a relay, a target, and a gateway key config.
@@ -239,6 +252,17 @@ impl Builder {
     /// Raw bytes of a gateway key endpoint response (`application/ohttp-keys`).
     pub fn encoded_key_config(mut self, bytes: &[u8]) -> Result<Self, Error> {
         self.key_config = Some(parse_key_config(bytes)?);
+        Ok(self)
+    }
+
+    /// Fetch and set the gateway key config with `bitreq`.
+    ///
+    /// Available with the `bitreq` feature; a convenience over GETting
+    /// `gateway_key_url` yourself and calling
+    /// [`encoded_key_config`](Self::encoded_key_config).
+    #[cfg(feature = "bitreq")]
+    pub async fn fetch_key_config(mut self, gateway_key_url: &str) -> Result<Self, Error> {
+        self.key_config = Some(crate::fetch_key_config(gateway_key_url).await?);
         Ok(self)
     }
 

@@ -57,7 +57,8 @@ fn e2e_through_relay_and_gateway() {
 }
 
 /// Same round trip, but the client sends the outer request itself via the
-/// `bitreq` feature's async `send`.
+/// `bitreq` feature's async request builder. Key fetching still goes through
+/// the crate's sans-IO `parse_key_config` fed by our own bitreq GET here.
 #[cfg(feature = "bitreq")]
 #[test]
 fn e2e_send_with_bitreq_feature() {
@@ -86,5 +87,40 @@ fn e2e_send_with_bitreq_feature() {
         .unwrap();
 
     assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"POST /echo?x=1 hello");
+}
+
+/// The fully `bitreq`-powered flow: the crate itself fetches the gateway key
+/// config *and* sends the outer request, both over `bitreq`. No HTTP client
+/// of our own anywhere in this test.
+#[cfg(feature = "bitreq")]
+#[test]
+fn e2e_fetch_key_config_and_send_with_bitreq() {
+    let harness = harness::TestHarness::start();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let client = runtime
+        .block_on(
+            OhttpClient::builder()
+                .relay(Url::parse(harness.relay_url()).unwrap())
+                .target(Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap())
+                .fetch_key_config(harness.gateway_url()),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let response = runtime
+        .block_on(
+            client
+                .post()
+                .header("content-type", "text/plain")
+                .body("hello")
+                .send(),
+        )
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.header("content-type"), Some(&b"text/plain"[..]));
     assert_eq!(response.body(), b"POST /echo?x=1 hello");
 }
