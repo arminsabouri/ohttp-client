@@ -1,9 +1,15 @@
 //! End-to-end test harness: a target HTTP server, an OHTTP gateway serving
-//! its key config, and a OHTTP relay ([`ohttp_relay`]) in front of it.
+//! its key config, an OHTTP relay ([`ohttp_relay`]) in front of it, and a
+//! generic HTTP `CONNECT` proxy standing in for a relay's key-fetch tunnel.
 //!
 //! The target and gateway are minimal hand-rolled HTTP/1.1 servers on
 //! std-thread [`TcpListener`]s; the relay runs on a background tokio runtime.
-//! Everything shuts down gracefully when the [`TestHarness`] is dropped.
+//! The `CONNECT` proxy is a second hand-rolled server: `ohttp-relay`'s own
+//! CONNECT bootstrap gates on an HTTPS-only gateway opt-in probe that our
+//! plain-HTTP test gateway can't satisfy, but `CONNECT` tunneling itself is a
+//! generic HTTP mechanism, so a minimal standalone proxy exercises the same
+//! client-side behavior. Everything shuts down gracefully when the
+//! [`TestHarness`] is dropped.
 
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -20,6 +26,7 @@ pub struct TestHarness {
     relay_url: String,
     gateway_url: String,
     target_url: String,
+    connect_proxy_url: String,
     shutdown: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     server_addrs: Vec<SocketAddr>,
@@ -77,10 +84,17 @@ impl TestHarness {
             .block_on(ohttp_relay::listen_tcp(relay_port, gateway_uri))
             .unwrap();
 
+        // Generic CONNECT proxy: stands in for a relay's key-fetch tunnel.
+        let connect_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let connect_addr = connect_listener.local_addr().unwrap();
+        server_addrs.push(connect_addr);
+        threads.push(serve_connect_proxy(connect_listener, shutdown.clone()));
+
         TestHarness {
             relay_url: format!("http://127.0.0.1:{relay_port}/"),
             gateway_url: format!("http://127.0.0.1:{}{}", gateway_addr.port(), GATEWAY_PATH),
             target_url: format!("http://127.0.0.1:{}", target_addr.port()),
+            connect_proxy_url: format!("http://127.0.0.1:{}/", connect_addr.port()),
             shutdown,
             threads,
             server_addrs,
@@ -101,6 +115,12 @@ impl TestHarness {
     /// Base URL of the target resource (distinct from the gateway).
     pub fn target_url(&self) -> &str {
         &self.target_url
+    }
+
+    /// URL of a generic HTTP `CONNECT` proxy, standing in for a relay's
+    /// key-fetch tunnel.
+    pub fn connect_proxy_url(&self) -> &str {
+        &self.connect_proxy_url
     }
 }
 
@@ -276,6 +296,57 @@ fn write_response(stream: &mut TcpStream, status: u16, headers: &[(String, Strin
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.write_all(body);
     let _ = stream.flush();
+}
+
+/// A minimal HTTP `CONNECT` proxy: read the request line and headers, dial
+/// the requested `host:port`, reply `200`, then pipe bytes bidirectionally.
+fn serve_connect_proxy(listener: TcpListener, shutdown: Arc<AtomicBool>) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            let Ok(client) = stream else { continue };
+            std::thread::spawn(move || {
+                let _ = handle_connect(client);
+            });
+        }
+    })
+}
+
+fn handle_connect(client: TcpStream) -> Option<()> {
+    let mut reader = BufReader::new(client.try_clone().ok()?);
+
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).ok()?;
+    let mut parts = request_line.split_whitespace();
+    if parts.next()? != "CONNECT" {
+        return None;
+    }
+    let target = parts.next()?.to_string();
+
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).ok()?;
+        if line.trim_end().is_empty() {
+            break;
+        }
+    }
+
+    let mut upstream = TcpStream::connect(&target).ok()?;
+    let mut client = reader.into_inner();
+    client
+        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        .ok()?;
+
+    let mut upstream_read = upstream.try_clone().ok()?;
+    let mut client_read = client.try_clone().ok()?;
+    let relay_up = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut client_read, &mut upstream);
+    });
+    let _ = std::io::copy(&mut upstream_read, &mut client);
+    let _ = relay_up.join();
+    Some(())
 }
 
 fn free_port() -> u16 {

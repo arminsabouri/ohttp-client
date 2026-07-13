@@ -124,3 +124,52 @@ fn e2e_fetch_key_config_and_send_with_bitreq() {
     assert_eq!(response.header("content-type"), Some(&b"text/plain"[..]));
     assert_eq!(response.body(), b"POST /echo?x=1 hello");
 }
+
+/// The key fetch itself is tunneled through an HTTP `CONNECT` proxy instead
+/// of dialing the gateway directly, so the gateway never learns the client's
+/// IP even for that bootstrap request.
+///
+/// The harness's generic `CONNECT` proxy stands in for a relay here: real
+/// relays such as `ohttp-relay` implement the same `CONNECT` tunneling (its
+/// `connect-bootstrap` feature), typically gated behind a gateway opt-in
+/// check that assumes an HTTPS gateway origin, which our plain-HTTP test
+/// gateway can't satisfy. That gating is a relay-operator policy concern
+/// orthogonal to what's being tested here: that `fetch_key_config_via_relay`
+/// correctly tunnels the key GET and parses what comes back.
+#[cfg(feature = "bitreq")]
+#[test]
+fn e2e_fetch_key_config_via_relay() {
+    let harness = harness::TestHarness::start();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let key_config = runtime
+        .block_on(ohttp_client::fetch_key_config_via_relay(
+            harness.gateway_url(),
+            &Url::parse(harness.connect_proxy_url()).unwrap(),
+        ))
+        .unwrap();
+
+    // Prove the tunneled fetch produced a working key config by using it for
+    // a normal encapsulate/decapsulate round trip against the gateway.
+    let client = OhttpClient::builder()
+        .relay(Url::parse(harness.relay_url()).unwrap())
+        .target(Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap())
+        .key_config(key_config)
+        .build()
+        .unwrap();
+
+    let (req, ctx) = client
+        .encapsulate("POST", &[("content-type", "text/plain")], Some(b"hello"))
+        .unwrap();
+    let gateway_res = bitreq::post(harness.gateway_url())
+        .with_header("content-type", req.content_type)
+        .with_body(req.body)
+        .send()
+        .unwrap();
+    assert_eq!(gateway_res.status_code, 200);
+
+    let response = ctx.decapsulate(gateway_res.as_bytes()).unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.header("content-type"), Some(&b"text/plain"[..]));
+    assert_eq!(response.body(), b"POST /echo?x=1 hello");
+}

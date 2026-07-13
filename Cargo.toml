@@ -8,12 +8,12 @@ bitreq = ["dep:bitreq"]
 
 [dependencies]
 bhttp = "0.7.2"
-bitreq = { version = "0.3.7", features = ["async"], optional = true }
+bitreq = { version = "0.3.7", features = ["async", "proxy"], optional = true }
 ohttp = "0.7.2"
 thiserror = "2"
 url = "2"
 
 [dev-dependencies]
-bitreq = "0.3.7"
+bitreq = { version = "0.3.7", features = ["proxy"] }
 ohttp-relay = "0.0.11"
 tokio = { version = "1", features = ["rt-multi-thread"] }

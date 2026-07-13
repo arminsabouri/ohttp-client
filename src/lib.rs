@@ -35,6 +35,10 @@
 //! `Builder::fetch_key_config` fetches step 1 asynchronously, and a request
 //! builder does steps 2 and 3:
 //! `client.post().header("content-type", "text/plain").body("hello").send().await?`.
+//! Use `Builder::fetch_key_config_via_relay` instead of `fetch_key_config` to
+//! tunnel the key fetch through the relay (HTTP `CONNECT`) rather than
+//! dialing the gateway directly, keeping the client's IP hidden from the
+//! gateway for that request too.
 
 use std::io::Cursor;
 use std::sync::Once;
@@ -65,6 +69,9 @@ pub enum Error {
     #[cfg(feature = "bitreq")]
     #[error("relay returned unexpected status: {0}")]
     UnexpectedStatus(i32),
+    #[cfg(feature = "bitreq")]
+    #[error("relay url has no host")]
+    NoRelayHost,
 }
 
 /// Parse the body of a gateway key endpoint response
@@ -88,6 +95,35 @@ fn init() {
 #[cfg(feature = "bitreq")]
 pub async fn fetch_key_config(gateway_key_url: &str) -> Result<KeyConfig, Error> {
     let res = bitreq::get(gateway_key_url).send_async().await?;
+    if res.status_code != 200 {
+        return Err(Error::UnexpectedStatus(res.status_code));
+    }
+    parse_key_config(res.as_bytes())
+}
+
+/// GET the gateway's key endpoint tunneled through the relay via HTTP
+/// `CONNECT`, rather than dialing the gateway directly.
+///
+/// A direct GET reveals the client's IP address to the gateway before any
+/// encapsulated request is ever sent, defeating the IP-hiding purpose of
+/// routing those requests through a relay. Tunneling the key fetch through
+/// the relay too (as `ohttp-relay`'s `connect-bootstrap` feature supports)
+/// means the gateway only ever sees the relay's IP. Available with the
+/// `bitreq` feature.
+#[cfg(feature = "bitreq")]
+pub async fn fetch_key_config_via_relay(
+    gateway_key_url: &str,
+    relay_url: &Url,
+) -> Result<KeyConfig, Error> {
+    let host = relay_url.host_str().ok_or(Error::NoRelayHost)?;
+    let port = relay_url
+        .port_or_known_default()
+        .ok_or(Error::NoRelayHost)?;
+    let proxy = bitreq::Proxy::new_http(format!("{host}:{port}"))?;
+    let res = bitreq::get(gateway_key_url)
+        .with_proxy(proxy)
+        .send_async()
+        .await?;
     if res.status_code != 200 {
         return Err(Error::UnexpectedStatus(res.status_code));
     }
@@ -207,9 +243,14 @@ impl RequestBuilder<'_> {
     /// Encapsulate the inner request, POST it to the relay, and decapsulate
     /// the inner response.
     pub async fn send(self) -> Result<Response, Error> {
-        let headers: Vec<(&str, &str)> =
-            self.headers.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
-        let (req, ctx) = self.client.encapsulate(&self.method, &headers, self.body.as_deref())?;
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        let (req, ctx) = self
+            .client
+            .encapsulate(&self.method, &headers, self.body.as_deref())?;
         let res = bitreq::post(req.url.as_str())
             .with_header("content-type", req.content_type)
             .with_body(req.body)
@@ -263,6 +304,22 @@ impl Builder {
     #[cfg(feature = "bitreq")]
     pub async fn fetch_key_config(mut self, gateway_key_url: &str) -> Result<Self, Error> {
         self.key_config = Some(crate::fetch_key_config(gateway_key_url).await?);
+        Ok(self)
+    }
+
+    /// Fetch and set the gateway key config with `bitreq`, tunneled through
+    /// the relay via HTTP `CONNECT` so the gateway never sees the caller's IP.
+    ///
+    /// Requires [`relay`](Self::relay) to have been called first. Available
+    /// with the `bitreq` feature; see [`fetch_key_config_via_relay`] for why
+    /// this is preferable to [`fetch_key_config`](Self::fetch_key_config).
+    #[cfg(feature = "bitreq")]
+    pub async fn fetch_key_config_via_relay(
+        mut self,
+        gateway_key_url: &str,
+    ) -> Result<Self, Error> {
+        let relay = self.relay.clone().ok_or(Error::MissingField("relay"))?;
+        self.key_config = Some(crate::fetch_key_config_via_relay(gateway_key_url, &relay).await?);
         Ok(self)
     }
 
