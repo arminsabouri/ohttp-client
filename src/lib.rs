@@ -30,6 +30,9 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! With the optional `bitreq` feature, [`OhttpClient::send`] does steps 2 and
+//! 3 for you, sending the outer request asynchronously via `bitreq`.
 
 use std::io::Cursor;
 use std::sync::Once;
@@ -54,6 +57,12 @@ pub enum Error {
     MissingField(&'static str),
     #[error("inner message is not a response")]
     NotAResponse,
+    #[cfg(feature = "bitreq")]
+    #[error("bitreq: {0}")]
+    Bitreq(#[from] bitreq::Error),
+    #[cfg(feature = "bitreq")]
+    #[error("relay returned unexpected status: {0}")]
+    UnexpectedStatus(i32),
 }
 
 /// Parse the body of a gateway key endpoint response
@@ -127,6 +136,33 @@ impl OhttpClient {
             },
             ResponseContext(ctx),
         ))
+    }
+}
+
+#[cfg(feature = "bitreq")]
+impl OhttpClient {
+    /// Encapsulate an inner request, send it to the relay with `bitreq`, and
+    /// decapsulate the inner response.
+    ///
+    /// A convenience over [`encapsulate`](Self::encapsulate) +
+    /// [`ResponseContext::decapsulate`] for callers who don't bring their own
+    /// HTTP client. Available with the `bitreq` feature.
+    pub async fn send(
+        &self,
+        method: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<Response, Error> {
+        let (req, ctx) = self.encapsulate(method, headers, body)?;
+        let res = bitreq::post(req.url.as_str())
+            .with_header("content-type", req.content_type)
+            .with_body(req.body)
+            .send_async()
+            .await?;
+        if res.status_code != 200 {
+            return Err(Error::UnexpectedStatus(res.status_code));
+        }
+        ctx.decapsulate(res.as_bytes())
     }
 }
 

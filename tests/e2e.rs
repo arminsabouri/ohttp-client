@@ -55,3 +55,30 @@ fn e2e_through_relay_and_gateway() {
     // traversed relay -> gateway -> target intact.
     assert_eq!(response.body(), b"POST /echo?x=1 hello");
 }
+
+/// Same round trip, but the client sends the outer request itself via the
+/// `bitreq` feature's async `send`.
+#[cfg(feature = "bitreq")]
+#[test]
+fn e2e_send_with_bitreq_feature() {
+    let harness = harness::TestHarness::start();
+
+    let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
+    assert_eq!(keys_res.status_code, 200);
+
+    let client = OhttpClient::builder()
+        .relay(Url::parse(harness.relay_url()).unwrap())
+        .target(Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap())
+        .encoded_key_config(keys_res.as_bytes())
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let response = runtime
+        .block_on(client.send("POST", &[("content-type", "text/plain")], Some(b"hello")))
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"POST /echo?x=1 hello");
+}

@@ -3,8 +3,12 @@ name = "ohttp-client"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+bitreq = ["dep:bitreq"]
+
 [dependencies]
 bhttp = "0.7.2"
+bitreq = { version = "0.3.7", features = ["async"], optional = true }
 ohttp = "0.7.2"
 thiserror = "2"
 url = "2"

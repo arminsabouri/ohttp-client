@@ -66,6 +66,9 @@ name = "bitreq"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b65c2e1ab98050c93cc9ada070d5070e014329c65196d03f6f8f1f75c2666f37"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "block-buffer"
