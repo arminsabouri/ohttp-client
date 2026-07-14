@@ -73,9 +73,44 @@ impl OhttpClient {
         self.request("GET")
     }
 
+    /// Shorthand for [`request("HEAD")`](Self::request).
+    pub fn head(&self) -> RequestBuilder<'_> {
+        self.request("HEAD")
+    }
+
     /// Shorthand for [`request("POST")`](Self::request).
     pub fn post(&self) -> RequestBuilder<'_> {
         self.request("POST")
+    }
+
+    /// Shorthand for [`request("PUT")`](Self::request).
+    pub fn put(&self) -> RequestBuilder<'_> {
+        self.request("PUT")
+    }
+
+    /// Shorthand for [`request("DELETE")`](Self::request).
+    pub fn delete(&self) -> RequestBuilder<'_> {
+        self.request("DELETE")
+    }
+
+    /// Shorthand for [`request("CONNECT")`](Self::request).
+    pub fn connect(&self) -> RequestBuilder<'_> {
+        self.request("CONNECT")
+    }
+
+    /// Shorthand for [`request("OPTIONS")`](Self::request).
+    pub fn options(&self) -> RequestBuilder<'_> {
+        self.request("OPTIONS")
+    }
+
+    /// Shorthand for [`request("TRACE")`](Self::request).
+    pub fn trace(&self) -> RequestBuilder<'_> {
+        self.request("TRACE")
+    }
+
+    /// Shorthand for [`request("PATCH")`](Self::request).
+    pub fn patch(&self) -> RequestBuilder<'_> {
+        self.request("PATCH")
     }
 }
 
