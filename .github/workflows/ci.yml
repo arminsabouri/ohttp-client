@@ -17,6 +17,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@just
       - name: fmt
@@ -25,6 +26,8 @@ jobs:
         run: just lint
       - name: test
         run: just test
+      - name: wasm
+        run: just check-wasm
 
   audit:
     runs-on: ubuntu-latest

@@ -36,6 +36,11 @@
 //! relay) and builds the client, and a request builder does encapsulate/send/
 //! decapsulate:
 //! `client.post().header("content-type", "text/plain").body("hello").send().await?`.
+//!
+//! For `wasm32-unknown-unknown` (browsers), enable the `wasm_js` feature so
+//! HPKE and padding can draw entropy via `crypto.getRandomValues`. Keep using
+//! the sans-IO API and send the outer request with your own JS/`fetch` stack;
+//! WASI targets need no extra feature.
 
 use std::io::Cursor;
 use std::sync::Once;

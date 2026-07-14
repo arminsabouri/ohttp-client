@@ -5,11 +5,19 @@ edition = "2024"
 
 [features]
 bitreq = ["dep:bitreq"]
+# Browser / `wasm32-unknown-unknown`: enables getrandom's JS backend
+# (`crypto.getRandomValues`) on both the 0.3 line we use directly and the
+# transitive 0.2 line pulled in by the AEAD stack. Enable this in the app when
+# targeting the web; WASI targets do not need it.
+wasm_js = ["getrandom/wasm_js", "dep:getrandom02"]
 
 [dependencies]
 bhttp = "0.7.2"
 bitreq = { version = "0.3.7", features = ["async", "proxy"], optional = true }
 getrandom = "0.3"
+# Feature-unification shim: pulls getrandom 0.2 with `js` so the transitive
+# AEAD/hpke stack compiles for `wasm32-unknown-unknown`.
+getrandom02 = { package = "getrandom", version = "0.2", optional = true, features = ["js"] }
 ohttp = "0.7.2"
 thiserror = "2"
 url = "2"
