@@ -19,7 +19,7 @@ fn e2e_through_relay_and_gateway() {
         Some("application/ohttp-keys")
     );
 
-    let target_url = format!("{}/echo?x=1", harness.target_url());
+    let target_url = format!("{}/echo", harness.target_url());
     let client = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
         Url::parse(&target_url).unwrap(),
@@ -28,7 +28,12 @@ fn e2e_through_relay_and_gateway() {
 
     // Encapsulate, send the outer request to the relay ourselves, decapsulate.
     let (req, ctx) = client
-        .encapsulate("POST", &[("content-type", "text/plain")], Some(b"hello"))
+        .encapsulate(
+            "POST",
+            &[("content-type", "text/plain")],
+            &[("x", "1")],
+            Some(b"hello"),
+        )
         .unwrap();
     let outer_res = bitreq::post(req.url.as_str())
         .with_header("content-type", req.content_type)
@@ -67,7 +72,7 @@ fn e2e_send_with_bitreq_feature() {
 
     let client = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
-        Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap(),
+        Url::parse(&format!("{}/echo", harness.target_url())).unwrap(),
         parse_key_config(keys_res.as_bytes()).unwrap(),
     );
 
@@ -76,6 +81,7 @@ fn e2e_send_with_bitreq_feature() {
         .block_on(
             client
                 .post()
+                .param("x", "1")
                 .header("content-type", "text/plain")
                 .body("hello")
                 .send(),
@@ -103,7 +109,7 @@ fn e2e_fetch_key_config_and_send_with_bitreq() {
         .unwrap();
     let client = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
-        Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap(),
+        Url::parse(&format!("{}/echo", harness.target_url())).unwrap(),
         key_config,
     );
 
@@ -111,6 +117,7 @@ fn e2e_fetch_key_config_and_send_with_bitreq() {
         .block_on(
             client
                 .post()
+                .param("x", "1")
                 .header("content-type", "text/plain")
                 .body("hello")
                 .send(),
@@ -142,7 +149,7 @@ fn e2e_from_gateway() {
     let client = runtime
         .block_on(OhttpClient::from_gateway(
             Url::parse(harness.connect_proxy_url()).unwrap(),
-            Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap(),
+            Url::parse(&format!("{}/echo", harness.target_url())).unwrap(),
             harness.gateway_url(),
         ))
         .unwrap();
@@ -150,7 +157,12 @@ fn e2e_from_gateway() {
     // Prove the tunneled fetch produced a working key config by using it for
     // a normal encapsulate/decapsulate round trip against the gateway.
     let (req, ctx) = client
-        .encapsulate("POST", &[("content-type", "text/plain")], Some(b"hello"))
+        .encapsulate(
+            "POST",
+            &[("content-type", "text/plain")],
+            &[("x", "1")],
+            Some(b"hello"),
+        )
         .unwrap();
     let gateway_res = bitreq::post(harness.gateway_url())
         .with_header("content-type", req.content_type)

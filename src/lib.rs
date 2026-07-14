@@ -21,7 +21,7 @@
 //! );
 //!
 //! // 2. Encapsulate; POST `req.body` to `req.url` with `req.content_type`.
-//! let (req, ctx) = client.encapsulate("POST", &[("content-type", "text/plain")], Some(b"hello"))?;
+//! let (req, ctx) = client.encapsulate("POST", &[("content-type", "text/plain")], &[], Some(b"hello"))?;
 //! let outer_response_body = send(&req);
 //!
 //! // 3. Decapsulate the raw response body to get the inner response.
@@ -100,19 +100,30 @@ impl OhttpClient {
 
     /// Encapsulate an inner request to the target.
     ///
+    /// `query` pairs are percent-encoded and appended to the target URL's
+    /// query string (after any query already present on the target).
+    ///
     /// Returns the outer request to POST to the relay yourself, and the
     /// one-shot context that decapsulates the corresponding response body.
     pub fn encapsulate(
         &self,
         method: &str,
         headers: &[(&str, &str)],
+        query: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<(OhttpRequest, ResponseContext), Error> {
-        let authority = self.target[url::Position::BeforeHost..url::Position::AfterPort].as_bytes();
-        let path = self.target[url::Position::BeforePath..].as_bytes();
+        let mut target = self.target.clone();
+        if !query.is_empty() {
+            let mut pairs = target.query_pairs_mut();
+            for (key, value) in query {
+                pairs.append_pair(key, value);
+            }
+        }
+        let authority = target[url::Position::BeforeHost..url::Position::AfterPort].as_bytes();
+        let path = target[url::Position::BeforePath..].as_bytes();
         let mut inner = Message::request(
             method.as_bytes().to_vec(),
-            self.target.scheme().as_bytes().to_vec(),
+            target.scheme().as_bytes().to_vec(),
             authority.to_vec(),
             path.to_vec(),
         );
@@ -236,7 +247,7 @@ mod tests {
         let client = test_client(server.config().clone());
 
         let (req, ctx) = client
-            .encapsulate("POST", &[("content-type", "text/plain")], Some(b"hello"))
+            .encapsulate("POST", &[("content-type", "text/plain")], &[], Some(b"hello"))
             .unwrap();
         assert_eq!(req.url.as_str(), "https://relay.example/");
         assert_eq!(req.content_type, "message/ohttp-req");
@@ -274,6 +285,31 @@ mod tests {
             Some(&b"application/json"[..])
         );
         assert_eq!(response.body(), b"{\"ok\":true}");
+    }
+
+    #[test]
+    fn encapsulate_appends_query_params() {
+        let server = ohttp::Server::new(test_key_config()).unwrap();
+        let client = OhttpClient::new(
+            Url::parse("https://relay.example/").unwrap(),
+            Url::parse("https://target.example/echo?existing=1").unwrap(),
+            server.config().clone(),
+        );
+
+        let (req, _) = client
+            .encapsulate(
+                "GET",
+                &[],
+                &[("x", "1"), ("q", "hello world")],
+                None,
+            )
+            .unwrap();
+        let (inner_bytes, _) = server.decapsulate(&req.body).unwrap();
+        let inner = Message::read_bhttp(&mut Cursor::new(&inner_bytes[..])).unwrap();
+        assert_eq!(
+            inner.control().path(),
+            Some(&b"/echo?existing=1&x=1&q=hello+world"[..])
+        );
     }
 
     #[test]

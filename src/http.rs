@@ -64,6 +64,7 @@ impl OhttpClient {
             client: self,
             method: method.into(),
             headers: Vec::new(),
+            params: Vec::new(),
             body: None,
         }
     }
@@ -121,6 +122,7 @@ pub struct RequestBuilder<'a> {
     client: &'a OhttpClient,
     method: String,
     headers: Vec<(String, String)>,
+    params: Vec<(String, String)>,
     body: Option<Vec<u8>>,
 }
 
@@ -128,6 +130,16 @@ impl RequestBuilder<'_> {
     /// Add a header to the inner request.
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// Add a query parameter to the inner request URL.
+    ///
+    /// The key and value are percent-encoded when the request is sent.
+    /// Parameters are appended after any query already present on the
+    /// client's target URL.
+    pub fn param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.params.push((key.into(), value.into()));
         self
     }
 
@@ -145,9 +157,17 @@ impl RequestBuilder<'_> {
             .iter()
             .map(|(n, v)| (n.as_str(), v.as_str()))
             .collect();
-        let (req, ctx) = self
-            .client
-            .encapsulate(&self.method, &headers, self.body.as_deref())?;
+        let query: Vec<(&str, &str)> = self
+            .params
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let (req, ctx) = self.client.encapsulate(
+            &self.method,
+            &headers,
+            &query,
+            self.body.as_deref(),
+        )?;
         let res = bitreq::post(req.url.as_str())
             .with_header("content-type", req.content_type)
             .with_body(req.body)
