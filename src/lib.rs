@@ -7,18 +7,18 @@
 //! bytes back in.
 //!
 //! ```no_run
-//! use ohttp_client::{OhttpClient, Url};
+//! use ohttp_client::{OhttpClient, Url, parse_key_config};
 //!
 //! # fn send(req: &ohttp_client::OhttpRequest) -> Vec<u8> { unimplemented!() }
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // 1. GET the gateway's key endpoint yourself, then build a client.
 //! let key_bytes: Vec<u8> = /* GET https://gateway.example/ohttp-keys */
 //! #    vec![];
-//! let client = OhttpClient::builder()
-//!     .relay(Url::parse("https://relay.example/")?)
-//!     .target(Url::parse("https://target.example/resource")?)
-//!     .encoded_key_config(&key_bytes)?
-//!     .build()?;
+//! let client = OhttpClient::new(
+//!     Url::parse("https://relay.example/")?,
+//!     Url::parse("https://target.example/resource")?,
+//!     parse_key_config(&key_bytes)?,
+//! );
 //!
 //! // 2. Encapsulate; POST `req.body` to `req.url` with `req.content_type`.
 //! let (req, ctx) = client.encapsulate("POST", &[("content-type", "text/plain")], Some(b"hello"))?;
@@ -32,13 +32,10 @@
 //! ```
 //!
 //! With the optional `bitreq` feature, `bitreq` can also do the IO for you:
-//! `Builder::fetch_key_config` fetches step 1 asynchronously, and a request
-//! builder does steps 2 and 3:
+//! [`OhttpClient::from_gateway`] fetches the key config (tunneled through the
+//! relay) and builds the client, and a request builder does encapsulate/send/
+//! decapsulate:
 //! `client.post().header("content-type", "text/plain").body("hello").send().await?`.
-//! Use `Builder::fetch_key_config_via_relay` instead of `fetch_key_config` to
-//! tunnel the key fetch through the relay (HTTP `CONNECT`) rather than
-//! dialing the gateway directly, keeping the client's IP hidden from the
-//! gateway for that request too.
 
 use std::io::Cursor;
 use std::sync::Once;
@@ -59,8 +56,6 @@ pub enum Error {
     Bhttp(#[from] bhttp::Error),
     #[error("no key config found in response")]
     NoKeyConfig,
-    #[error("builder missing required field: {0}")]
-    MissingField(&'static str),
     #[error("inner message is not a response")]
     NotAResponse,
     #[cfg(feature = "bitreq")]
@@ -132,9 +127,11 @@ pub async fn fetch_key_config_via_relay(
 
 /// An OHTTP client bound to a relay, a target, and a gateway key config.
 ///
-/// Build one with [`OhttpClient::builder`], then call [`encapsulate`] per
-/// request. The target may differ from the gateway; the gateway URL itself is
-/// never needed here — only its key config.
+/// Construct with [`OhttpClient::new`] when you already have a key config, or
+/// with [`OhttpClient::from_gateway`] (requires the `bitreq` feature) to fetch
+/// the key config through the relay. Then call [`encapsulate`] per request.
+/// The target may differ from the gateway; after construction the gateway URL
+/// itself is not needed — only its key config.
 ///
 /// [`encapsulate`]: OhttpClient::encapsulate
 #[derive(Debug, Clone)]
@@ -145,8 +142,14 @@ pub struct OhttpClient {
 }
 
 impl OhttpClient {
-    pub fn builder() -> Builder {
-        Builder::default()
+    /// Bind a client to a relay, target, and already-known gateway key config.
+    pub fn new(relay: Url, target: Url, key_config: KeyConfig) -> Self {
+        init();
+        Self {
+            relay,
+            target,
+            key_config,
+        }
     }
 
     /// Encapsulate an inner request to the target.
@@ -191,6 +194,21 @@ impl OhttpClient {
 
 #[cfg(feature = "bitreq")]
 impl OhttpClient {
+    /// Fetch the gateway key config through the relay (HTTP `CONNECT`) and
+    /// build a client.
+    ///
+    /// Prefer this over dialing the gateway yourself and calling [`new`]: the
+    /// gateway never sees the caller's IP, even for the bootstrap key fetch.
+    /// See [`fetch_key_config_via_relay`].
+    pub async fn from_gateway(
+        relay: Url,
+        target: Url,
+        gateway_key_url: &str,
+    ) -> Result<Self, Error> {
+        let key_config = fetch_key_config_via_relay(gateway_key_url, &relay).await?;
+        Ok(Self::new(relay, target, key_config))
+    }
+
     /// Start building an inner request with the given method.
     ///
     /// Available with the `bitreq` feature; [`RequestBuilder::send`]
@@ -260,76 +278,6 @@ impl RequestBuilder<'_> {
             return Err(Error::UnexpectedStatus(res.status_code));
         }
         ctx.decapsulate(res.as_bytes())
-    }
-}
-
-/// Builder for [`OhttpClient`]. Relay, target, and key config are required.
-#[derive(Debug, Default)]
-pub struct Builder {
-    relay: Option<Url>,
-    target: Option<Url>,
-    key_config: Option<KeyConfig>,
-}
-
-impl Builder {
-    /// URL of the OHTTP relay the outer request is POSTed to.
-    pub fn relay(mut self, url: Url) -> Self {
-        self.relay = Some(url);
-        self
-    }
-
-    /// URL of the resource the inner request is addressed to.
-    pub fn target(mut self, url: Url) -> Self {
-        self.target = Some(url);
-        self
-    }
-
-    /// An already-parsed gateway key config.
-    pub fn key_config(mut self, config: KeyConfig) -> Self {
-        self.key_config = Some(config);
-        self
-    }
-
-    /// Raw bytes of a gateway key endpoint response (`application/ohttp-keys`).
-    pub fn encoded_key_config(mut self, bytes: &[u8]) -> Result<Self, Error> {
-        self.key_config = Some(parse_key_config(bytes)?);
-        Ok(self)
-    }
-
-    /// Fetch and set the gateway key config with `bitreq`.
-    ///
-    /// Available with the `bitreq` feature; a convenience over GETting
-    /// `gateway_key_url` yourself and calling
-    /// [`encoded_key_config`](Self::encoded_key_config).
-    #[cfg(feature = "bitreq")]
-    pub async fn fetch_key_config(mut self, gateway_key_url: &str) -> Result<Self, Error> {
-        self.key_config = Some(crate::fetch_key_config(gateway_key_url).await?);
-        Ok(self)
-    }
-
-    /// Fetch and set the gateway key config with `bitreq`, tunneled through
-    /// the relay via HTTP `CONNECT` so the gateway never sees the caller's IP.
-    ///
-    /// Requires [`relay`](Self::relay) to have been called first. Available
-    /// with the `bitreq` feature; see [`fetch_key_config_via_relay`] for why
-    /// this is preferable to [`fetch_key_config`](Self::fetch_key_config).
-    #[cfg(feature = "bitreq")]
-    pub async fn fetch_key_config_via_relay(
-        mut self,
-        gateway_key_url: &str,
-    ) -> Result<Self, Error> {
-        let relay = self.relay.clone().ok_or(Error::MissingField("relay"))?;
-        self.key_config = Some(crate::fetch_key_config_via_relay(gateway_key_url, &relay).await?);
-        Ok(self)
-    }
-
-    pub fn build(self) -> Result<OhttpClient, Error> {
-        init();
-        Ok(OhttpClient {
-            relay: self.relay.ok_or(Error::MissingField("relay"))?,
-            target: self.target.ok_or(Error::MissingField("target"))?,
-            key_config: self.key_config.ok_or(Error::MissingField("key_config"))?,
-        })
     }
 }
 
@@ -418,12 +366,11 @@ mod tests {
     }
 
     fn test_client(config: KeyConfig) -> OhttpClient {
-        OhttpClient::builder()
-            .relay(Url::parse("https://relay.example/").unwrap())
-            .target(Url::parse("https://target.example:8443/api/v1/thing?x=1").unwrap())
-            .key_config(config)
-            .build()
-            .unwrap()
+        OhttpClient::new(
+            Url::parse("https://relay.example/").unwrap(),
+            Url::parse("https://target.example:8443/api/v1/thing?x=1").unwrap(),
+            config,
+        )
     }
 
     #[test]
@@ -480,11 +427,5 @@ mod tests {
         assert_eq!(parsed.encode().unwrap(), config.encode().unwrap());
 
         assert!(matches!(parse_key_config(&[]), Err(Error::NoKeyConfig)));
-    }
-
-    #[test]
-    fn builder_missing_fields() {
-        let err = OhttpClient::builder().build().unwrap_err();
-        assert!(matches!(err, Error::MissingField("relay")));
     }
 }

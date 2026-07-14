@@ -3,7 +3,7 @@
 //! forwards it to the gateway, which forwards the inner request to a target
 //! on a different origin than the gateway.
 
-use ohttp_client::{OhttpClient, Url};
+use ohttp_client::{OhttpClient, Url, parse_key_config};
 
 mod harness;
 
@@ -20,13 +20,11 @@ fn e2e_through_relay_and_gateway() {
     );
 
     let target_url = format!("{}/echo?x=1", harness.target_url());
-    let client = OhttpClient::builder()
-        .relay(Url::parse(harness.relay_url()).unwrap())
-        .target(Url::parse(&target_url).unwrap())
-        .encoded_key_config(keys_res.as_bytes())
-        .unwrap()
-        .build()
-        .unwrap();
+    let client = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(&target_url).unwrap(),
+        parse_key_config(keys_res.as_bytes()).unwrap(),
+    );
 
     // Encapsulate, send the outer request to the relay ourselves, decapsulate.
     let (req, ctx) = client
@@ -67,13 +65,11 @@ fn e2e_send_with_bitreq_feature() {
     let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
     assert_eq!(keys_res.status_code, 200);
 
-    let client = OhttpClient::builder()
-        .relay(Url::parse(harness.relay_url()).unwrap())
-        .target(Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap())
-        .encoded_key_config(keys_res.as_bytes())
-        .unwrap()
-        .build()
-        .unwrap();
+    let client = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap(),
+        parse_key_config(keys_res.as_bytes()).unwrap(),
+    );
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let response = runtime
@@ -91,24 +87,25 @@ fn e2e_send_with_bitreq_feature() {
 }
 
 /// The fully `bitreq`-powered flow: the crate itself fetches the gateway key
-/// config *and* sends the outer request, both over `bitreq`. No HTTP client
-/// of our own anywhere in this test.
+/// config *and* sends the outer request, both over `bitreq`.
+///
+/// Key fetch is direct (not via `CONNECT`) so we can bind the real OHTTP
+/// relay for encapsulated requests. For the privacy-preserving bootstrap,
+/// see `e2e_from_gateway`.
 #[cfg(feature = "bitreq")]
 #[test]
 fn e2e_fetch_key_config_and_send_with_bitreq() {
     let harness = harness::TestHarness::start();
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
-    let client = runtime
-        .block_on(
-            OhttpClient::builder()
-                .relay(Url::parse(harness.relay_url()).unwrap())
-                .target(Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap())
-                .fetch_key_config(harness.gateway_url()),
-        )
-        .unwrap()
-        .build()
+    let key_config = runtime
+        .block_on(ohttp_client::fetch_key_config(harness.gateway_url()))
         .unwrap();
+    let client = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap(),
+        key_config,
+    );
 
     let response = runtime
         .block_on(
@@ -125,39 +122,33 @@ fn e2e_fetch_key_config_and_send_with_bitreq() {
     assert_eq!(response.body(), b"POST /echo?x=1 hello");
 }
 
-/// The key fetch itself is tunneled through an HTTP `CONNECT` proxy instead
-/// of dialing the gateway directly, so the gateway never learns the client's
-/// IP even for that bootstrap request.
+/// [`OhttpClient::from_gateway`] tunnels the key fetch through an HTTP
+/// `CONNECT` proxy instead of dialing the gateway directly, so the gateway
+/// never learns the client's IP even for that bootstrap request.
 ///
 /// The harness's generic `CONNECT` proxy stands in for a relay here: real
 /// relays such as `ohttp-relay` implement the same `CONNECT` tunneling (its
 /// `connect-bootstrap` feature), typically gated behind a gateway opt-in
 /// check that assumes an HTTPS gateway origin, which our plain-HTTP test
 /// gateway can't satisfy. That gating is a relay-operator policy concern
-/// orthogonal to what's being tested here: that `fetch_key_config_via_relay`
-/// correctly tunnels the key GET and parses what comes back.
+/// orthogonal to what's being tested here: that `from_gateway` correctly
+/// tunnels the key GET and parses what comes back.
 #[cfg(feature = "bitreq")]
 #[test]
-fn e2e_fetch_key_config_via_relay() {
+fn e2e_from_gateway() {
     let harness = harness::TestHarness::start();
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
-    let key_config = runtime
-        .block_on(ohttp_client::fetch_key_config_via_relay(
+    let client = runtime
+        .block_on(OhttpClient::from_gateway(
+            Url::parse(harness.connect_proxy_url()).unwrap(),
+            Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap(),
             harness.gateway_url(),
-            &Url::parse(harness.connect_proxy_url()).unwrap(),
         ))
         .unwrap();
 
     // Prove the tunneled fetch produced a working key config by using it for
     // a normal encapsulate/decapsulate round trip against the gateway.
-    let client = OhttpClient::builder()
-        .relay(Url::parse(harness.relay_url()).unwrap())
-        .target(Url::parse(&format!("{}/echo?x=1", harness.target_url())).unwrap())
-        .key_config(key_config)
-        .build()
-        .unwrap();
-
     let (req, ctx) = client
         .encapsulate("POST", &[("content-type", "text/plain")], Some(b"hello"))
         .unwrap();
