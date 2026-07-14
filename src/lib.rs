@@ -45,6 +45,9 @@ use bhttp::{Message, Mode};
 pub use ohttp::KeyConfig;
 pub use url::Url;
 
+mod error;
+pub use error::Error;
+
 #[cfg(feature = "bitreq")]
 mod http;
 #[cfg(feature = "bitreq")]
@@ -52,27 +55,6 @@ pub use http::{RequestBuilder, fetch_key_config, fetch_key_config_via_relay};
 
 /// Media type of an encapsulated request, per RFC 9458.
 pub const OHTTP_REQ_CONTENT_TYPE: &str = "message/ohttp-req";
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("ohttp: {0}")]
-    Ohttp(#[from] ohttp::Error),
-    #[error("bhttp: {0}")]
-    Bhttp(#[from] bhttp::Error),
-    #[error("no key config found in response")]
-    NoKeyConfig,
-    #[error("inner message is not a response")]
-    NotAResponse,
-    #[cfg(feature = "bitreq")]
-    #[error("bitreq: {0}")]
-    Bitreq(#[from] bitreq::Error),
-    #[cfg(feature = "bitreq")]
-    #[error("relay returned unexpected status: {0}")]
-    UnexpectedStatus(i32),
-    #[cfg(feature = "bitreq")]
-    #[error("relay url has no host")]
-    NoRelayHost,
-}
 
 /// Parse the body of a gateway key endpoint response
 /// (`application/ohttp-keys`, RFC 9540) into the first usable [`KeyConfig`].
