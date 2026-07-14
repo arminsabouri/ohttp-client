@@ -79,12 +79,16 @@ fn init() {
 /// The target may differ from the gateway; after construction the gateway URL
 /// itself is not needed — only its key config.
 ///
+/// Optionally set a [`known_length`](OhttpClient::known_length) to pad every
+/// encapsulated request's BHTTP plaintext to a fixed size.
+///
 /// [`encapsulate`]: OhttpClient::encapsulate
 #[derive(Debug, Clone)]
 pub struct OhttpClient {
     key_config: KeyConfig,
     relay: Url,
     target: Url,
+    known_length: Option<usize>,
 }
 
 impl OhttpClient {
@@ -95,7 +99,17 @@ impl OhttpClient {
             relay,
             target,
             key_config,
+            known_length: None,
         }
+    }
+
+    /// Pad every encapsulated request's BHTTP plaintext to exactly
+    /// `known_length` bytes (random fill, then the BHTTP message written at
+    /// the start). Encapsulation returns [`Error::KnownLengthTooSmall`] if a
+    /// message does not fit.
+    pub fn known_length(mut self, known_length: usize) -> Self {
+        self.known_length = Some(known_length);
+        self
     }
 
     /// Encapsulate an inner request to the target.
@@ -133,8 +147,7 @@ impl OhttpClient {
         if let Some(body) = body {
             inner.write_content(body);
         }
-        let mut bhttp_bytes = Vec::new();
-        inner.write_bhttp(Mode::KnownLength, &mut bhttp_bytes)?;
+        let bhttp_bytes = write_bhttp_payload(&inner, self.known_length)?;
 
         let (encapsulated, ctx) = ohttp::ClientRequest::from_config(&mut self.key_config.clone())?
             .encapsulate(&bhttp_bytes)?;
@@ -147,6 +160,28 @@ impl OhttpClient {
             ResponseContext(ctx),
         ))
     }
+}
+
+/// Serialize `inner` as known-length BHTTP, optionally padded to `known_length`.
+///
+/// When padding, the buffer is filled with random bytes first and the BHTTP
+/// message is then written at the start, leaving random trailing padding.
+fn write_bhttp_payload(inner: &Message, known_length: Option<usize>) -> Result<Vec<u8>, Error> {
+    let mut msg = Vec::new();
+    inner.write_bhttp(Mode::KnownLength, &mut msg)?;
+    let Some(len) = known_length else {
+        return Ok(msg);
+    };
+    if msg.len() > len {
+        return Err(Error::KnownLengthTooSmall {
+            needed: msg.len(),
+            known_length: len,
+        });
+    }
+    let mut buf = vec![0u8; len];
+    getrandom::fill(&mut buf)?;
+    buf[..msg.len()].copy_from_slice(&msg);
+    Ok(buf)
 }
 
 /// The outer request to send to the relay with your own HTTP client:
@@ -247,7 +282,12 @@ mod tests {
         let client = test_client(server.config().clone());
 
         let (req, ctx) = client
-            .encapsulate("POST", &[("content-type", "text/plain")], &[], Some(b"hello"))
+            .encapsulate(
+                "POST",
+                &[("content-type", "text/plain")],
+                &[],
+                Some(b"hello"),
+            )
             .unwrap();
         assert_eq!(req.url.as_str(), "https://relay.example/");
         assert_eq!(req.content_type, "message/ohttp-req");
@@ -297,12 +337,7 @@ mod tests {
         );
 
         let (req, _) = client
-            .encapsulate(
-                "GET",
-                &[],
-                &[("x", "1"), ("q", "hello world")],
-                None,
-            )
+            .encapsulate("GET", &[], &[("x", "1"), ("q", "hello world")], None)
             .unwrap();
         let (inner_bytes, _) = server.decapsulate(&req.body).unwrap();
         let inner = Message::read_bhttp(&mut Cursor::new(&inner_bytes[..])).unwrap();
@@ -320,5 +355,45 @@ mod tests {
         assert_eq!(parsed.encode().unwrap(), config.encode().unwrap());
 
         assert!(matches!(parse_key_config(&[]), Err(Error::NoKeyConfig)));
+    }
+
+    #[test]
+    fn encapsulate_pads_to_known_length() {
+        let server = ohttp::Server::new(test_key_config()).unwrap();
+        let known_length = 512;
+        let client = test_client(server.config().clone()).known_length(known_length);
+
+        let (req, _) = client
+            .encapsulate(
+                "POST",
+                &[("content-type", "text/plain")],
+                &[],
+                Some(b"hello"),
+            )
+            .unwrap();
+
+        let (inner_bytes, _) = server.decapsulate(&req.body).unwrap();
+        assert_eq!(inner_bytes.len(), known_length);
+
+        let mut cursor = Cursor::new(&inner_bytes[..]);
+        let inner = Message::read_bhttp(&mut cursor).unwrap();
+        assert_eq!(inner.content(), b"hello");
+        let msg_len = cursor.position() as usize;
+        assert!(msg_len < known_length);
+        // Trailing padding is random, not zero-filled.
+        assert!(inner_bytes[msg_len..].iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn encapsulate_rejects_known_length_too_small() {
+        let client = test_client(test_key_config()).known_length(1);
+        let result = client.encapsulate("POST", &[], &[], Some(b"hello"));
+        assert!(matches!(
+            result,
+            Err(Error::KnownLengthTooSmall {
+                needed,
+                known_length: 1
+            }) if needed > 1
+        ));
     }
 }

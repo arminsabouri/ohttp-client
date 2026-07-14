@@ -162,12 +162,9 @@ impl RequestBuilder<'_> {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let (req, ctx) = self.client.encapsulate(
-            &self.method,
-            &headers,
-            &query,
-            self.body.as_deref(),
-        )?;
+        let (req, ctx) =
+            self.client
+                .encapsulate(&self.method, &headers, &query, self.body.as_deref())?;
         let res = bitreq::post(req.url.as_str())
             .with_header("content-type", req.content_type)
             .with_body(req.body)

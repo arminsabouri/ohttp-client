@@ -9,6 +9,7 @@ bitreq = ["dep:bitreq"]
 [dependencies]
 bhttp = "0.7.2"
 bitreq = { version = "0.3.7", features = ["async", "proxy"], optional = true }
+getrandom = "0.3"
 ohttp = "0.7.2"
 thiserror = "2"
 url = "2"

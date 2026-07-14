@@ -4,6 +4,10 @@ pub enum Error {
     Ohttp(#[from] ohttp::Error),
     #[error("bhttp: {0}")]
     Bhttp(#[from] bhttp::Error),
+    #[error("getrandom: {0}")]
+    GetRandom(#[from] getrandom::Error),
+    #[error("bhttp payload ({needed} bytes) exceeds known length ({known_length})")]
+    KnownLengthTooSmall { needed: usize, known_length: usize },
     #[error("no key config found in response")]
     NoKeyConfig,
     #[error("inner message is not a response")]

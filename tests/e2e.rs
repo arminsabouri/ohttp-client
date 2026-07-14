@@ -59,6 +59,74 @@ fn e2e_through_relay_and_gateway() {
     assert_eq!(response.body(), b"POST /echo?x=1 hello");
 }
 
+/// With a fixed BHTTP plaintext
+/// length so trailing random padding is present. Proves the gateway's
+/// `read_bhttp` ignores the pad and the rest of the stack still works.
+#[test]
+fn e2e_with_known_length_padding() {
+    let harness = harness::TestHarness::start();
+
+    let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
+    assert_eq!(keys_res.status_code, 200);
+    let key_config = parse_key_config(keys_res.as_bytes()).unwrap();
+
+    let target_url = format!("{}/echo", harness.target_url());
+    let known_length = 1024;
+    let client = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(&target_url).unwrap(),
+        key_config.clone(),
+    )
+    .known_length(known_length);
+
+    let (req, ctx) = client
+        .encapsulate(
+            "POST",
+            &[("content-type", "text/plain")],
+            &[("x", "1")],
+            Some(b"hello"),
+        )
+        .unwrap();
+
+    // Ciphertext should be larger than an unpadded encapsulation of the same
+    // request (same AEAD overhead, longer plaintext).
+    let (unpadded, _) = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(&target_url).unwrap(),
+        key_config,
+    )
+    .encapsulate(
+        "POST",
+        &[("content-type", "text/plain")],
+        &[("x", "1")],
+        Some(b"hello"),
+    )
+    .unwrap();
+    assert!(
+        req.body.len() > unpadded.body.len(),
+        "padded {} vs unpadded {}",
+        req.body.len(),
+        unpadded.body.len()
+    );
+
+    let outer_res = bitreq::post(req.url.as_str())
+        .with_header("content-type", req.content_type)
+        .with_body(req.body)
+        .send()
+        .unwrap();
+    assert_eq!(
+        outer_res.status_code,
+        200,
+        "relay says: {:?}",
+        outer_res.as_str()
+    );
+
+    let response = ctx.decapsulate(outer_res.as_bytes()).unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.header("content-type"), Some(&b"text/plain"[..]));
+    assert_eq!(response.body(), b"POST /echo?x=1 hello");
+}
+
 /// Same round trip, but the client sends the outer request itself via the
 /// `bitreq` feature's async request builder. Key fetching still goes through
 /// the crate's sans-IO `parse_key_config` fed by our own bitreq GET here.
