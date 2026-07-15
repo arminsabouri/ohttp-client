@@ -16,12 +16,19 @@
 //! #    vec![];
 //! let client = OhttpClient::new(
 //!     Url::parse("https://relay.example/")?,
-//!     Url::parse("https://target.example/resource")?,
+//!     Url::parse("https://target.example/")?,
 //!     parse_key_config(&key_bytes)?,
 //! );
 //!
 //! // 2. Encapsulate; POST `req.body` to `req.url` with `req.content_type`.
-//! let (req, ctx) = client.encapsulate("POST", &[("content-type", "text/plain")], &[], Some(b"hello"))?;
+//! //    Path is per-request (origin is fixed on the client).
+//! let (req, ctx) = client.encapsulate(
+//!     "POST",
+//!     "/resource",
+//!     &[("content-type", "text/plain")],
+//!     &[],
+//!     Some(b"hello"),
+//! )?;
 //! let outer_response_body = send(&req);
 //!
 //! // 3. Decapsulate the raw response body to get the inner response.
@@ -35,7 +42,7 @@
 //! [`OhttpClient::from_gateway`] fetches the key config (tunneled through the
 //! relay) and builds the client, and a request builder does encapsulate/send/
 //! decapsulate:
-//! `client.post().header("content-type", "text/plain").body("hello").send().await?`.
+//! `client.post("/resource").header("content-type", "text/plain").body("hello").send().await?`.
 //!
 //! For `wasm32-unknown-unknown` (browsers), enable the `wasm` feature for
 //! [`wasm-bindgen`](https://rustwasm.github.io/wasm-bindgen/) exports (and the
@@ -57,7 +64,7 @@ pub use error::Error;
 #[cfg(feature = "bitreq")]
 mod http;
 #[cfg(feature = "bitreq")]
-pub use http::{RequestBuilder, fetch_key_config, fetch_key_config_via_relay};
+pub use http::{fetch_key_config, fetch_key_config_via_relay, RequestBuilder};
 
 #[cfg(feature = "wasm")]
 mod wasm;
@@ -82,13 +89,15 @@ fn init() {
     INIT.call_once(ohttp::init);
 }
 
-/// An OHTTP client bound to a relay, a target, and a gateway key config.
+/// An OHTTP client bound to a relay, a target origin, and a gateway key config.
 ///
 /// Construct with [`OhttpClient::new`] when you already have a key config, or
 /// with [`OhttpClient::from_gateway`] (requires the `bitreq` feature) to fetch
-/// the key config through the relay. Then call [`encapsulate`] per request.
-/// The target may differ from the gateway; after construction the gateway URL
-/// itself is not needed — only its key config.
+/// the key config through the relay. Then call [`encapsulate`] per request with
+/// a path on that origin — the client holds the origin, not a fixed resource
+/// path (e.g. many Esplora paths on one API origin).
+/// The target origin may differ from the gateway; after construction the
+/// gateway URL itself is not needed — only its key config.
 ///
 /// Optionally set a [`known_length`](OhttpClient::known_length) to pad every
 /// encapsulated request's BHTTP plaintext to a fixed size.
@@ -98,12 +107,16 @@ fn init() {
 pub struct OhttpClient {
     key_config: KeyConfig,
     relay: Url,
+    /// Target origin (scheme + host [+ port] [+ base path]).
     target: Url,
     known_length: Option<usize>,
 }
 
 impl OhttpClient {
-    /// Bind a client to a relay, target, and already-known gateway key config.
+    /// Bind a client to a relay, target origin, and already-known gateway key config.
+    ///
+    /// `target` is the API base URL whose path is prepended to each request
+    /// path in [`encapsulate`](Self::encapsulate) (e.g. `https://mempool.space/api`).
     pub fn new(relay: Url, target: Url, key_config: KeyConfig) -> Self {
         init();
         Self {
@@ -123,21 +136,26 @@ impl OhttpClient {
         self
     }
 
-    /// Encapsulate an inner request to the target.
+    /// Encapsulate an inner request to `path` on this client's target origin.
     ///
-    /// `query` pairs are percent-encoded and appended to the target URL's
-    /// query string (after any query already present on the target).
+    /// `path` is appended to the target's path with slash normalization
+    /// (e.g. target `https://mempool.space/api` + `"/tx/abc"` →
+    /// `https://mempool.space/api/tx/abc`).
+    ///
+    /// `query` pairs are percent-encoded and appended to the resolved URL's
+    /// query string (after any query already present on `path` or the target).
     ///
     /// Returns the outer request to POST to the relay yourself, and the
     /// one-shot context that decapsulates the corresponding response body.
     pub fn encapsulate(
         &self,
         method: &str,
+        path: &str,
         headers: &[(&str, &str)],
         query: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<(OhttpRequest, ResponseContext), Error> {
-        let mut target = self.target.clone();
+        let mut target = resolve_target(&self.target, path)?;
         if !query.is_empty() {
             let mut pairs = target.query_pairs_mut();
             for (key, value) in query {
@@ -145,12 +163,12 @@ impl OhttpClient {
             }
         }
         let authority = target[url::Position::BeforeHost..url::Position::AfterPort].as_bytes();
-        let path = target[url::Position::BeforePath..].as_bytes();
+        let path_and_query = target[url::Position::BeforePath..].as_bytes();
         let mut inner = Message::request(
             method.as_bytes().to_vec(),
             target.scheme().as_bytes().to_vec(),
             authority.to_vec(),
-            path.to_vec(),
+            path_and_query.to_vec(),
         );
         for (name, value) in headers {
             inner.put_header(name.as_bytes(), value.as_bytes());
@@ -170,6 +188,60 @@ impl OhttpClient {
             },
             ResponseContext(ctx),
         ))
+    }
+}
+
+/// Append `path` onto `base`'s path (slash-normalized), keeping `base`'s origin.
+///
+/// Unlike [`Url::join`], a leading `/` on `path` does not replace `base`'s path:
+/// `https://example/api` + `/tx/abc` → `https://example/api/tx/abc`.
+fn resolve_target(base: &Url, path: &str) -> Result<Url, Error> {
+    if path.starts_with("//") || Url::parse(path).is_ok() {
+        return Err(Error::PathEscapesOrigin);
+    }
+
+    let (path_part, path_query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path, None),
+    };
+
+    let mut target = base.clone();
+    target.set_path(&append_paths(base.path(), path_part));
+    if let Some(q) = path_query {
+        match target.query() {
+            Some(existing) => {
+                let mut merged = String::with_capacity(existing.len() + 1 + q.len());
+                merged.push_str(existing);
+                merged.push('&');
+                merged.push_str(q);
+                target.set_query(Some(&merged));
+            }
+            None => {
+                target.set_query(Some(q));
+            }
+        }
+    }
+
+    if target.origin() != base.origin() {
+        return Err(Error::PathEscapesOrigin);
+    }
+    Ok(target)
+}
+
+/// `"/api"` + `"/tx/abc"` → `"/api/tx/abc"`; also works without a leading slash on `path`.
+fn append_paths(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        if base.is_empty() {
+            "/".to_owned()
+        } else {
+            base.to_owned()
+        }
+    } else if base.is_empty() {
+        format!("/{path}")
+    } else {
+        format!("{base}/{path}")
     }
 }
 
@@ -266,8 +338,8 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ohttp::SymmetricSuite;
     use ohttp::hpke::{Aead, Kdf, Kem};
+    use ohttp::SymmetricSuite;
 
     fn test_key_config() -> KeyConfig {
         init();
@@ -282,7 +354,7 @@ mod tests {
     fn test_client(config: KeyConfig) -> OhttpClient {
         OhttpClient::new(
             Url::parse("https://relay.example/").unwrap(),
-            Url::parse("https://target.example:8443/api/v1/thing?x=1").unwrap(),
+            Url::parse("https://target.example:8443/").unwrap(),
             config,
         )
     }
@@ -295,6 +367,7 @@ mod tests {
         let (req, ctx) = client
             .encapsulate(
                 "POST",
+                "/api/v1/thing?x=1",
                 &[("content-type", "text/plain")],
                 &[],
                 Some(b"hello"),
@@ -343,12 +416,18 @@ mod tests {
         let server = ohttp::Server::new(test_key_config()).unwrap();
         let client = OhttpClient::new(
             Url::parse("https://relay.example/").unwrap(),
-            Url::parse("https://target.example/echo?existing=1").unwrap(),
+            Url::parse("https://target.example/").unwrap(),
             server.config().clone(),
         );
 
         let (req, _) = client
-            .encapsulate("GET", &[], &[("x", "1"), ("q", "hello world")], None)
+            .encapsulate(
+                "GET",
+                "/echo?existing=1",
+                &[],
+                &[("x", "1"), ("q", "hello world")],
+                None,
+            )
             .unwrap();
         let (inner_bytes, _) = server.decapsulate(&req.body).unwrap();
         let inner = Message::read_bhttp(&mut Cursor::new(&inner_bytes[..])).unwrap();
@@ -356,6 +435,58 @@ mod tests {
             inner.control().path(),
             Some(&b"/echo?existing=1&x=1&q=hello+world"[..])
         );
+    }
+
+    #[test]
+    fn encapsulate_rejects_absolute_url() {
+        let client = OhttpClient::new(
+            Url::parse("https://relay.example/").unwrap(),
+            Url::parse("https://target.example/").unwrap(),
+            test_key_config(),
+        );
+
+        assert!(matches!(
+            client.encapsulate("GET", "https://other.example/foo", &[], &[], None),
+            Err(Error::PathEscapesOrigin)
+        ));
+        assert!(matches!(
+            client.encapsulate("GET", "//evil.example/foo", &[], &[], None),
+            Err(Error::PathEscapesOrigin)
+        ));
+    }
+
+    #[test]
+    fn encapsulate_appends_path_to_api_base() {
+        let server = ohttp::Server::new(test_key_config()).unwrap();
+        // No trailing slash on the API base — leading `/` on path must not drop `/api`.
+        let client = OhttpClient::new(
+            Url::parse("https://relay.example/").unwrap(),
+            Url::parse("https://target.example/api").unwrap(),
+            server.config().clone(),
+        );
+
+        let (req, _) = client
+            .encapsulate("GET", "/tx/abc", &[], &[], None)
+            .unwrap();
+        let (inner_bytes, _) = server.decapsulate(&req.body).unwrap();
+        let inner = Message::read_bhttp(&mut Cursor::new(&inner_bytes[..])).unwrap();
+        assert_eq!(inner.control().path(), Some(&b"/api/tx/abc"[..]));
+
+        let (req, _) = client
+            .encapsulate("GET", "blocks/tip/height", &[], &[], None)
+            .unwrap();
+        let (inner_bytes, _) = server.decapsulate(&req.body).unwrap();
+        let inner = Message::read_bhttp(&mut Cursor::new(&inner_bytes[..])).unwrap();
+        assert_eq!(inner.control().path(), Some(&b"/api/blocks/tip/height"[..]));
+    }
+
+    #[test]
+    fn append_paths_slash_normalization() {
+        assert_eq!(append_paths("/api", "/tx/abc"), "/api/tx/abc");
+        assert_eq!(append_paths("/api/", "/tx/abc"), "/api/tx/abc");
+        assert_eq!(append_paths("/api", "tx/abc"), "/api/tx/abc");
+        assert_eq!(append_paths("/", "/echo"), "/echo");
+        assert_eq!(append_paths("", "echo"), "/echo");
     }
 
     #[test]
@@ -377,6 +508,7 @@ mod tests {
         let (req, _) = client
             .encapsulate(
                 "POST",
+                "/api/v1/thing",
                 &[("content-type", "text/plain")],
                 &[],
                 Some(b"hello"),
@@ -398,7 +530,7 @@ mod tests {
     #[test]
     fn encapsulate_rejects_known_length_too_small() {
         let client = test_client(test_key_config()).known_length(1);
-        let result = client.encapsulate("POST", &[], &[], Some(b"hello"));
+        let result = client.encapsulate("POST", "/", &[], &[], Some(b"hello"));
         assert!(matches!(
             result,
             Err(Error::KnownLengthTooSmall {

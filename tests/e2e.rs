@@ -3,7 +3,7 @@
 //! forwards it to the gateway, which forwards the inner request to a target
 //! on a different origin than the gateway.
 
-use ohttp_client::{OhttpClient, Url, parse_key_config};
+use ohttp_client::{parse_key_config, OhttpClient, Url};
 
 mod harness;
 
@@ -19,10 +19,9 @@ fn e2e_through_relay_and_gateway() {
         Some("application/ohttp-keys")
     );
 
-    let target_url = format!("{}/echo", harness.target_url());
     let client = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
-        Url::parse(&target_url).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
         parse_key_config(keys_res.as_bytes()).unwrap(),
     );
 
@@ -30,6 +29,7 @@ fn e2e_through_relay_and_gateway() {
     let (req, ctx) = client
         .encapsulate(
             "POST",
+            "/echo",
             &[("content-type", "text/plain")],
             &[("x", "1")],
             Some(b"hello"),
@@ -70,11 +70,10 @@ fn e2e_with_known_length_padding() {
     assert_eq!(keys_res.status_code, 200);
     let key_config = parse_key_config(keys_res.as_bytes()).unwrap();
 
-    let target_url = format!("{}/echo", harness.target_url());
     let known_length = 1024;
     let client = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
-        Url::parse(&target_url).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
         key_config.clone(),
     )
     .known_length(known_length);
@@ -82,6 +81,7 @@ fn e2e_with_known_length_padding() {
     let (req, ctx) = client
         .encapsulate(
             "POST",
+            "/echo",
             &[("content-type", "text/plain")],
             &[("x", "1")],
             Some(b"hello"),
@@ -92,11 +92,12 @@ fn e2e_with_known_length_padding() {
     // request (same AEAD overhead, longer plaintext).
     let (unpadded, _) = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
-        Url::parse(&target_url).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
         key_config,
     )
     .encapsulate(
         "POST",
+        "/echo",
         &[("content-type", "text/plain")],
         &[("x", "1")],
         Some(b"hello"),
@@ -140,7 +141,7 @@ fn e2e_send_with_bitreq_feature() {
 
     let client = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
-        Url::parse(&format!("{}/echo", harness.target_url())).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
         parse_key_config(keys_res.as_bytes()).unwrap(),
     );
 
@@ -148,7 +149,7 @@ fn e2e_send_with_bitreq_feature() {
     let response = runtime
         .block_on(
             client
-                .post()
+                .post("/echo")
                 .param("x", "1")
                 .header("content-type", "text/plain")
                 .body("hello")
@@ -177,14 +178,14 @@ fn e2e_fetch_key_config_and_send_with_bitreq() {
         .unwrap();
     let client = OhttpClient::new(
         Url::parse(harness.relay_url()).unwrap(),
-        Url::parse(&format!("{}/echo", harness.target_url())).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
         key_config,
     );
 
     let response = runtime
         .block_on(
             client
-                .post()
+                .post("/echo")
                 .param("x", "1")
                 .header("content-type", "text/plain")
                 .body("hello")
@@ -217,7 +218,7 @@ fn e2e_from_gateway() {
     let client = runtime
         .block_on(OhttpClient::from_gateway(
             Url::parse(harness.connect_proxy_url()).unwrap(),
-            Url::parse(&format!("{}/echo", harness.target_url())).unwrap(),
+            Url::parse(harness.target_url()).unwrap(),
             harness.gateway_url(),
         ))
         .unwrap();
@@ -227,6 +228,7 @@ fn e2e_from_gateway() {
     let (req, ctx) = client
         .encapsulate(
             "POST",
+            "/echo",
             &[("content-type", "text/plain")],
             &[("x", "1")],
             Some(b"hello"),
@@ -258,12 +260,15 @@ fn e2e_wasm_bindgen_api() {
     let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
     assert_eq!(keys_res.status_code, 200);
 
-    let target_url = format!("{}/echo", harness.target_url());
-    let client =
-        WasmOhttpClient::new(harness.relay_url(), &target_url, keys_res.as_bytes()).unwrap();
+    let client = WasmOhttpClient::new(
+        harness.relay_url(),
+        harness.target_url(),
+        keys_res.as_bytes(),
+    )
+    .unwrap();
 
     let encapsulated = client
-        .encapsulate("POST")
+        .encapsulate("POST", "/echo")
         .header("content-type", "text/plain")
         .param("x", "1")
         .body(b"hello".to_vec())

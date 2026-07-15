@@ -45,10 +45,11 @@ await init();
 // await init({ module_or_path: readFileSync('./pkg/ohttp_client_bg.wasm') });
 
 const keys = new Uint8Array(await (await fetch(gatewayKeysUrl)).arrayBuffer());
+// `targetUrl` is the origin; pass the path (or full URL) per request.
 const client = new OhttpClient(relayUrl, targetUrl, keys);
 
 const encapsulated = client
-  .encapsulate('POST')
+  .encapsulate('POST', '/resource')
   .header('content-type', 'text/plain')
   .body(new TextEncoder().encode('hello'))
   .build();

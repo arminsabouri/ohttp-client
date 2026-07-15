@@ -49,9 +49,9 @@ try {
   if (!keysRes.ok) throw new Error(`key fetch failed: ${keysRes.status}`);
   const keys = new Uint8Array(await keysRes.arrayBuffer());
 
-  const client = new OhttpClient(urls.relay_url, `${urls.target_url}/echo`, keys);
+  const client = new OhttpClient(urls.relay_url, urls.target_url, keys);
   const encapsulated = client
-    .encapsulate('POST')
+    .encapsulate('POST', '/echo')
     .header('content-type', 'text/plain')
     .param('x', '1')
     .body(new TextEncoder().encode('hello'))
