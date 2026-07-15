@@ -12,14 +12,14 @@ export {
   EncapsulateBuilder,
   Encapsulated,
   OhttpResponse,
-} from '../pkg/ohttp_client.js';
+} from './pkg/ohttp_client.js';
 
 /**
  * POST `encapsulated` to the relay and decapsulate the response body.
  *
- * @param {import('../pkg/ohttp_client.js').Encapsulated} encapsulated
+ * @param {import('./pkg/ohttp_client.js').Encapsulated} encapsulated
  * @param {typeof fetch} [fetchFn=globalThis.fetch]
- * @returns {Promise<import('../pkg/ohttp_client.js').OhttpResponse>}
+ * @returns {Promise<import('./pkg/ohttp_client.js').OhttpResponse>}
  */
 export async function send(encapsulated, fetchFn = globalThis.fetch) {
   const res = await fetchFn(encapsulated.url, {

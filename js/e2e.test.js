@@ -11,8 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { init, OhttpClient, send } from './index.js';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const wasmPath = join(root, 'pkg', 'ohttp_client_bg.wasm');
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, '..');
+const wasmPath = join(here, 'pkg', 'ohttp_client_bg.wasm');
 
 await init({ module_or_path: readFileSync(wasmPath) });
 

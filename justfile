@@ -23,9 +23,9 @@ test:
 check-wasm:
     cargo check --target wasm32-unknown-unknown --features wasm
 
-# Build the web wasm package into pkg/.
+# Build the web wasm package into js/pkg/.
 build-wasm:
-    wasm-pack build --target web --out-dir pkg --out-name ohttp_client -- --features wasm
+    wasm-pack build --target web --out-dir js/pkg --out-name ohttp_client -- --features wasm
 
 # Build wasm and run the JS e2e against the Rust test harness.
 test-js: build-wasm
