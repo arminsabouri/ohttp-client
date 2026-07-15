@@ -3,6 +3,9 @@ name = "ohttp-client"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 bitreq = ["dep:bitreq"]
 # Browser / `wasm32-unknown-unknown`: enables getrandom's JS backend
@@ -10,6 +13,10 @@ bitreq = ["dep:bitreq"]
 # transitive 0.2 line pulled in by the AEAD stack. Enable this in the app when
 # targeting the web; WASI targets do not need it.
 wasm_js = ["getrandom/wasm_js", "dep:getrandom02"]
+# `wasm-bindgen` exports for browser hosts (implies `wasm_js`).
+wasm = ["wasm_js", "dep:wasm-bindgen"]
+# Test harness binary for JS e2e (`ohttp-test-harness`).
+harness = ["bitreq", "dep:ohttp-relay", "dep:tokio"]
 
 [dependencies]
 bhttp = "0.7.2"
@@ -19,10 +26,18 @@ getrandom = "0.3"
 # AEAD/hpke stack compiles for `wasm32-unknown-unknown`.
 getrandom02 = { package = "getrandom", version = "0.2", optional = true, features = ["js"] }
 ohttp = "0.7.2"
+ohttp-relay = { version = "0.0.11", optional = true }
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 url = "2"
+wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 bitreq = { version = "0.3.7", features = ["proxy"] }
 ohttp-relay = "0.0.11"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[[bin]]
+name = "ohttp-test-harness"
+path = "src/bin/ohttp-test-harness.rs"
+required-features = ["harness"]

@@ -244,3 +244,49 @@ fn e2e_from_gateway() {
     assert_eq!(response.header("content-type"), Some(&b"text/plain"[..]));
     assert_eq!(response.body(), b"POST /echo?x=1 hello");
 }
+
+/// Same relay -> gateway -> target path, exercised through the `wasm-bindgen`
+/// API surface (`WasmOhttpClient` / `Encapsulated`). The host still does HTTP
+/// with `bitreq`; in a browser that would be `fetch`.
+#[cfg(feature = "wasm")]
+#[test]
+fn e2e_wasm_bindgen_api() {
+    use ohttp_client::WasmOhttpClient;
+
+    let harness = harness::TestHarness::start();
+
+    let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
+    assert_eq!(keys_res.status_code, 200);
+
+    let target_url = format!("{}/echo", harness.target_url());
+    let client =
+        WasmOhttpClient::new(harness.relay_url(), &target_url, keys_res.as_bytes()).unwrap();
+
+    let encapsulated = client
+        .encapsulate("POST")
+        .header("content-type", "text/plain")
+        .param("x", "1")
+        .body(b"hello".to_vec())
+        .build()
+        .unwrap();
+
+    let outer_res = bitreq::post(encapsulated.url())
+        .with_header("content-type", encapsulated.content_type())
+        .with_body(encapsulated.body())
+        .send()
+        .unwrap();
+    assert_eq!(
+        outer_res.status_code,
+        200,
+        "relay says: {:?}",
+        outer_res.as_str()
+    );
+
+    let response = encapsulated.decapsulate(outer_res.as_bytes()).unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.header("content-type"),
+        Some(b"text/plain".to_vec())
+    );
+    assert_eq!(response.body(), b"POST /echo?x=1 hello");
+}

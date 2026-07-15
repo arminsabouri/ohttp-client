@@ -1,0 +1,15 @@
+{
+  "name": "ohttp-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JS helpers for the ohttp-client wasm build",
+  "exports": "./index.js",
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir ../pkg --out-name ohttp_client .. -- --features wasm",
+    "test": "node e2e.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

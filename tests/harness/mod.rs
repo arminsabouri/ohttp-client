@@ -74,15 +74,29 @@ impl TestHarness {
         }));
 
         // Relay: the real ohttp-relay crate, forwarding to the gateway.
-        let relay_port = free_port();
+        // `free_port` + bind is racy under parallel tests; retry on EADDRINUSE.
         let gateway_uri: ohttp_relay::GatewayUri =
             format!("http://127.0.0.1:{}", gateway_addr.port())
                 .parse()
                 .unwrap();
         let relay_rt = tokio::runtime::Runtime::new().unwrap();
-        relay_rt
-            .block_on(ohttp_relay::listen_tcp(relay_port, gateway_uri))
-            .unwrap();
+        let relay_port = {
+            let mut last_err = None;
+            let mut bound = None;
+            for _ in 0..16 {
+                let port = free_port();
+                match relay_rt.block_on(ohttp_relay::listen_tcp(port, gateway_uri.clone())) {
+                    Ok(_handle) => {
+                        bound = Some(port);
+                        break;
+                    }
+                    Err(err) => last_err = Some(err),
+                }
+            }
+            bound.unwrap_or_else(|| {
+                panic!("failed to bind ohttp-relay after retries: {:?}", last_err)
+            })
+        };
 
         // Generic CONNECT proxy: stands in for a relay's key-fetch tunnel.
         let connect_listener = TcpListener::bind("127.0.0.1:0").unwrap();

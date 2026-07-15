@@ -37,10 +37,11 @@
 //! decapsulate:
 //! `client.post().header("content-type", "text/plain").body("hello").send().await?`.
 //!
-//! For `wasm32-unknown-unknown` (browsers), enable the `wasm_js` feature so
-//! HPKE and padding can draw entropy via `crypto.getRandomValues`. Keep using
-//! the sans-IO API and send the outer request with your own JS/`fetch` stack;
-//! WASI targets need no extra feature.
+//! For `wasm32-unknown-unknown` (browsers), enable the `wasm` feature for
+//! [`wasm-bindgen`](https://rustwasm.github.io/wasm-bindgen/) exports (and the
+//! JS RNG backend). Keep using the sans-IO flow from JS: encapsulate, `fetch`
+//! the outer request yourself, then decapsulate. WASI needs no extra feature;
+//! `wasm_js` alone is enough if you bind the Rust API without `wasm-bindgen`.
 
 use std::io::Cursor;
 use std::sync::Once;
@@ -57,6 +58,11 @@ pub use error::Error;
 mod http;
 #[cfg(feature = "bitreq")]
 pub use http::{RequestBuilder, fetch_key_config, fetch_key_config_via_relay};
+
+#[cfg(feature = "wasm")]
+mod wasm;
+#[cfg(feature = "wasm")]
+pub use wasm::{EncapsulateBuilder, Encapsulated, WasmOhttpClient, WasmResponse};
 
 /// Media type of an encapsulated request, per RFC 9458.
 pub const OHTTP_REQ_CONTENT_TYPE: &str = "message/ohttp-req";
