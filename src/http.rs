@@ -1,7 +1,7 @@
 //! Optional `bitreq` integration: key-config fetch and an async request builder
 //! that encapsulate / send / decapsulate in one call.
 
-use crate::{Error, KeyConfig, OhttpClient, Response, Url, parse_key_config};
+use crate::{parse_key_config, Error, KeyConfig, OhttpClient, Response, Url};
 
 /// GET the gateway's key endpoint with `bitreq` and parse the result.
 pub async fn fetch_key_config(gateway_key_url: &str) -> Result<KeyConfig, Error> {
@@ -46,6 +46,9 @@ impl OhttpClient {
     /// Prefer this over dialing the gateway yourself and calling [`Self::new`]:
     /// the gateway never sees the caller's IP, even for the bootstrap key
     /// fetch. See [`fetch_key_config_via_relay`].
+    ///
+    /// `target` is the origin used to resolve per-request paths (see
+    /// [`Self::new`]).
     pub async fn from_gateway(
         relay: Url,
         target: Url,
@@ -55,72 +58,81 @@ impl OhttpClient {
         Ok(Self::new(relay, target, key_config))
     }
 
-    /// Start building an inner request with the given method.
+    /// Start building an inner request with the given method and path on the
+    /// client's target origin.
     ///
     /// [`RequestBuilder::send`] encapsulates, sends via `bitreq`, and
-    /// decapsulates in one call.
-    pub fn request(&self, method: impl Into<String>) -> RequestBuilder<'_> {
+    /// decapsulates in one call. `path` must stay on the target origin (see
+    /// [`OhttpClient::encapsulate`]).
+    pub fn request(
+        &self,
+        method: impl Into<String>,
+        path: impl Into<String>,
+    ) -> RequestBuilder<'_> {
         RequestBuilder {
             client: self,
             method: method.into(),
+            path: path.into(),
             headers: Vec::new(),
             params: Vec::new(),
             body: None,
         }
     }
 
-    /// Shorthand for [`request("GET")`](Self::request).
-    pub fn get(&self) -> RequestBuilder<'_> {
-        self.request("GET")
+    /// Shorthand for [`request("GET", path)`](Self::request).
+    pub fn get(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("GET", path)
     }
 
-    /// Shorthand for [`request("HEAD")`](Self::request).
-    pub fn head(&self) -> RequestBuilder<'_> {
-        self.request("HEAD")
+    /// Shorthand for [`request("HEAD", path)`](Self::request).
+    pub fn head(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("HEAD", path)
     }
 
-    /// Shorthand for [`request("POST")`](Self::request).
-    pub fn post(&self) -> RequestBuilder<'_> {
-        self.request("POST")
+    /// Shorthand for [`request("POST", path)`](Self::request).
+    pub fn post(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("POST", path)
     }
 
-    /// Shorthand for [`request("PUT")`](Self::request).
-    pub fn put(&self) -> RequestBuilder<'_> {
-        self.request("PUT")
+    /// Shorthand for [`request("PUT", path)`](Self::request).
+    pub fn put(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("PUT", path)
     }
 
-    /// Shorthand for [`request("DELETE")`](Self::request).
-    pub fn delete(&self) -> RequestBuilder<'_> {
-        self.request("DELETE")
+    /// Shorthand for [`request("DELETE", path)`](Self::request).
+    pub fn delete(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("DELETE", path)
     }
 
-    /// Shorthand for [`request("CONNECT")`](Self::request).
-    pub fn connect(&self) -> RequestBuilder<'_> {
-        self.request("CONNECT")
+    /// Shorthand for [`request("CONNECT", path)`](Self::request).
+    pub fn connect(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("CONNECT", path)
     }
 
-    /// Shorthand for [`request("OPTIONS")`](Self::request).
-    pub fn options(&self) -> RequestBuilder<'_> {
-        self.request("OPTIONS")
+    /// Shorthand for [`request("OPTIONS", path)`](Self::request).
+    pub fn options(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("OPTIONS", path)
     }
 
-    /// Shorthand for [`request("TRACE")`](Self::request).
-    pub fn trace(&self) -> RequestBuilder<'_> {
-        self.request("TRACE")
+    /// Shorthand for [`request("TRACE", path)`](Self::request).
+    pub fn trace(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("TRACE", path)
     }
 
-    /// Shorthand for [`request("PATCH")`](Self::request).
-    pub fn patch(&self) -> RequestBuilder<'_> {
-        self.request("PATCH")
+    /// Shorthand for [`request("PATCH", path)`](Self::request).
+    pub fn patch(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+        self.request("PATCH", path)
     }
 }
 
-/// Builds an inner request against the client's target, then sends it through
-/// the relay with `bitreq`. Created by [`OhttpClient::request`] and friends.
+/// Builds an inner request against a path on the client's target origin, then
+/// sends it through the relay with `bitreq`. Created by [`OhttpClient::request`]
+/// and friends.
 #[must_use = "call `send()` to perform the request"]
 pub struct RequestBuilder<'a> {
     client: &'a OhttpClient,
     method: String,
+    path: String,
     headers: Vec<(String, String)>,
     params: Vec<(String, String)>,
     body: Option<Vec<u8>>,
@@ -137,7 +149,7 @@ impl RequestBuilder<'_> {
     ///
     /// The key and value are percent-encoded when the request is sent.
     /// Parameters are appended after any query already present on the
-    /// client's target URL.
+    /// resolved path/URL.
     pub fn param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.params.push((key.into(), value.into()));
         self
@@ -162,14 +174,19 @@ impl RequestBuilder<'_> {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let (req, ctx) =
-            self.client
-                .encapsulate(&self.method, &headers, &query, self.body.as_deref())?;
+        let (req, ctx) = self.client.encapsulate(
+            &self.method,
+            &self.path,
+            &headers,
+            &query,
+            self.body.as_deref(),
+        )?;
         let res = bitreq::post(req.url.as_str())
             .with_header("content-type", req.content_type)
             .with_body(req.body)
             .send_async()
             .await?;
+        // TODO: other status codes?
         if res.status_code != 200 {
             return Err(Error::UnexpectedStatus(res.status_code));
         }

@@ -4,6 +4,8 @@ pub enum Error {
     Ohttp(#[from] ohttp::Error),
     #[error("bhttp: {0}")]
     Bhttp(#[from] bhttp::Error),
+    #[error("url: {0}")]
+    Url(#[from] url::ParseError),
     #[error("getrandom: {0}")]
     GetRandom(#[from] getrandom::Error),
     #[error("bhttp payload ({needed} bytes) exceeds known length ({known_length})")]
@@ -12,6 +14,8 @@ pub enum Error {
     NoKeyConfig,
     #[error("inner message is not a response")]
     NotAResponse,
+    #[error("path must stay on the client's target origin")]
+    PathEscapesOrigin,
     #[cfg(feature = "bitreq")]
     #[error("bitreq: {0}")]
     Bitreq(#[from] bitreq::Error),

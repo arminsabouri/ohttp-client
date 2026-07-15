@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::{OhttpClient, Response, ResponseContext, Url, parse_key_config};
+use crate::{parse_key_config, OhttpClient, Response, ResponseContext, Url};
 
 fn js_err(err: impl std::fmt::Display) -> JsError {
     JsError::new(&err.to_string())
@@ -12,6 +12,9 @@ fn js_err(err: impl std::fmt::Display) -> JsError {
 
 /// Browser-facing OHTTP client. Encapsulate here; send the outer request with
 /// `fetch` (or equivalent), then [`Encapsulated::decapsulate`].
+///
+/// Construct with a target origin; pass a path on that origin to
+/// [`encapsulate`](WasmOhttpClient::encapsulate) per request.
 #[wasm_bindgen(js_name = OhttpClient)]
 pub struct WasmOhttpClient {
     inner: OhttpClient,
@@ -40,6 +43,7 @@ impl WasmOhttpClient {
         EncapsulateBuilder {
             client: self.inner.clone(),
             method: method.to_owned(),
+            path: path.to_owned(),
             headers: Vec::new(),
             query: Vec::new(),
             body: None,
@@ -52,6 +56,7 @@ impl WasmOhttpClient {
 pub struct EncapsulateBuilder {
     client: OhttpClient,
     method: String,
+    path: String,
     headers: Vec<(String, String)>,
     query: Vec<(String, String)>,
     body: Option<Vec<u8>>,
@@ -87,7 +92,13 @@ impl EncapsulateBuilder {
             .collect();
         let (req, ctx) = self
             .client
-            .encapsulate(&self.method, &headers, &query, self.body.as_deref())
+            .encapsulate(
+                &self.method,
+                &self.path,
+                &headers,
+                &query,
+                self.body.as_deref(),
+            )
             .map_err(js_err)?;
         Ok(Encapsulated {
             url: req.url.to_string(),
