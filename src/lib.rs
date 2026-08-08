@@ -86,12 +86,28 @@ pub const OHTTP_REQ_CONTENT_TYPE: &str = "message/ohttp-req";
 
 /// Parse the body of a gateway key endpoint response
 /// (`application/ohttp-keys`, RFC 9540) into the first usable [`KeyConfig`].
+///
+/// Gateways may advertise several configs for clients of differing
+/// capabilities; unusable ones are skipped.
 pub fn parse_key_config(bytes: &[u8]) -> Result<KeyConfig, Error> {
     init();
     KeyConfig::decode_list(bytes)?
         .into_iter()
-        .next()
+        .find(has_usable_suite)
         .ok_or(Error::NoKeyConfig)
+}
+
+/// Whether `config` kept at least one symmetric suite this build supports.
+///
+/// `KeyConfig::decode` strips unsupported KDF/AEAD pairs without rejecting a
+/// config left with none (e.g. one offering only AES-256-GCM), and
+/// `ohttp::ClientRequest::from_config` then panics indexing the empty list.
+///
+/// Suites are private, so this reads `encode`, which round-trips the stripped
+/// list: an empty one ends in its own zero length field, a non-empty one in an
+/// AEAD id, and id 0 is reserved (`decode` rejects it).
+fn has_usable_suite(config: &KeyConfig) -> bool {
+    config.encode().is_ok_and(|enc| !enc.ends_with(&[0, 0]))
 }
 
 fn init() {
@@ -507,6 +523,55 @@ mod tests {
         assert_eq!(parsed.encode().unwrap(), config.encode().unwrap());
 
         assert!(matches!(parse_key_config(&[]), Err(Error::NoKeyConfig)));
+    }
+
+    /// Encode `configs` as an `application/ohttp-keys` list, prefixing each
+    /// with its two-byte length (mirrors `KeyConfig::encode_list`, but takes
+    /// raw bytes so tests can build configs the crate refuses to construct).
+    fn encode_raw_list(configs: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for config in configs {
+            let len = u16::try_from(config.len()).unwrap();
+            out.extend_from_slice(&len.to_be_bytes());
+            out.extend_from_slice(config);
+        }
+        out
+    }
+
+    /// A config whose only symmetric suite is one this build does not support,
+    /// so `KeyConfig::decode` strips it and leaves the suite list empty.
+    fn config_with_no_supported_suite() -> Vec<u8> {
+        // `test_key_config` encodes as key_id | kem | pk | suite_len | kdf | aead;
+        // swap its trailing suite for HkdfSha256 + AES-256-GCM.
+        let mut encoded = test_key_config().encode().unwrap();
+        let suite = encoded.len() - 4;
+        encoded[suite..].copy_from_slice(&[
+            0,
+            u16::from(Kdf::HkdfSha256) as u8,
+            0,
+            u16::from(Aead::Aes256Gcm) as u8,
+        ]);
+        encoded
+    }
+
+    #[test]
+    fn parse_key_config_skips_config_with_no_supported_suite() {
+        // Alone, it is not usable at all — and must not panic downstream.
+        let unusable = config_with_no_supported_suite();
+        assert!(matches!(
+            parse_key_config(&encode_raw_list(std::slice::from_ref(&unusable))),
+            Err(Error::NoKeyConfig)
+        ));
+
+        // Listed ahead of a usable config, it is skipped rather than selected.
+        let usable = test_key_config();
+        let encoded = encode_raw_list(&[unusable, usable.encode().unwrap()]);
+        let parsed = parse_key_config(&encoded).unwrap();
+        assert_eq!(parsed.encode().unwrap(), usable.encode().unwrap());
+
+        // The selected config encapsulates without panicking.
+        let client = test_client(parsed);
+        assert!(client.encapsulate("GET", "/", &[], &[], None).is_ok());
     }
 
     #[test]
