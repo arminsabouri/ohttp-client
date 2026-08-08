@@ -15,6 +15,27 @@ fn js_err(err: impl std::fmt::Display) -> JsError {
 ///
 /// Construct with a target origin; pass a path on that origin to
 /// [`encapsulate`](WasmOhttpClient::encapsulate) per request.
+///
+/// # Key rotation
+///
+/// A gateway that has rotated its keys cannot decapsulate requests sealed to
+/// the old one and answers 400 (or 401). Because the host does its own `fetch`,
+/// it sees that status directly:
+///
+/// ```js
+/// let res = await fetch(enc.url, { method: 'POST', headers, body: enc.body });
+/// if (res.status === 400 || res.status === 401) {
+///   const keys = await fetch(gatewayKeyUrl).then(r => r.arrayBuffer());
+///   // `false` means the gateway still advertises the same key — the 400 was
+///   // something else, so do not resend.
+///   if (client.setKeyConfig(new Uint8Array(keys))) {
+///     enc = client.encapsulate(method, path).build();  // resend once
+///     res = await fetch(enc.url, { method: 'POST', headers, body: enc.body });
+///   }
+/// }
+/// ```
+///
+/// The old [`Encapsulated`] is spent either way — build a fresh one to retry.
 #[wasm_bindgen(js_name = OhttpClient)]
 pub struct WasmOhttpClient {
     inner: OhttpClient,
@@ -36,6 +57,18 @@ impl WasmOhttpClient {
     pub fn known_length(mut self, n: usize) -> WasmOhttpClient {
         self.inner = self.inner.known_length(n);
         self
+    }
+
+    /// Adopt a freshly fetched `application/ohttp-keys` body, returning whether
+    /// the gateway's key actually changed.
+    ///
+    /// Call this after a 400/401 from the relay; see the class docs. Builders
+    /// created earlier share this client's config, so they pick up the new key
+    /// too — but only at `build()`, so anything already encapsulated is stale.
+    #[wasm_bindgen(js_name = setKeyConfig)]
+    pub fn set_key_config(&self, key_config: &[u8]) -> Result<bool, JsError> {
+        let key_config = parse_key_config(key_config).map_err(js_err)?;
+        Ok(self.inner.set_key_config(key_config))
     }
 
     /// Start building an encapsulated request to `path` on the target origin.

@@ -14,7 +14,7 @@
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 
 /// Gateway opt-in advertised to the relay's prober: ALPN-style list
@@ -27,10 +27,30 @@ pub struct TestHarness {
     gateway_url: String,
     target_url: String,
     connect_proxy_url: String,
+    gateway_keys: GatewayKeys,
     shutdown: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     server_addrs: Vec<SocketAddr>,
     relay_rt: Option<tokio::runtime::Runtime>,
+}
+
+/// The gateway's accepted key set, newest first. The key endpoint advertises
+/// only the newest; decapsulation tries all of them, which is how a real
+/// gateway keeps a retired key working through an overlap window.
+type GatewayKeys = Arc<RwLock<Vec<Arc<ohttp::Server>>>>;
+
+/// Build a gateway key pair on `key_id`, with the one suite this crate uses.
+fn gateway_server(key_id: u8) -> Arc<ohttp::Server> {
+    let key_config = crate::KeyConfig::new(
+        key_id,
+        ohttp::hpke::Kem::X25519Sha256,
+        vec![ohttp::SymmetricSuite::new(
+            ohttp::hpke::Kdf::HkdfSha256,
+            ohttp::hpke::Aead::ChaCha20Poly1305,
+        )],
+    )
+    .unwrap();
+    Arc::new(ohttp::Server::new(key_config).unwrap())
 }
 
 impl TestHarness {
@@ -56,21 +76,13 @@ impl TestHarness {
 
         // Gateway: serves its key config, opts in to relaying, and
         // decapsulates requests, forwarding them to the inner target.
-        let key_config = crate::KeyConfig::new(
-            1,
-            ohttp::hpke::Kem::X25519Sha256,
-            vec![ohttp::SymmetricSuite::new(
-                ohttp::hpke::Kdf::HkdfSha256,
-                ohttp::hpke::Aead::ChaCha20Poly1305,
-            )],
-        )
-        .unwrap();
-        let ohttp_server = Arc::new(ohttp::Server::new(key_config).unwrap());
+        let gateway_keys: GatewayKeys = Arc::new(RwLock::new(vec![gateway_server(1)]));
         let gateway_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let gateway_addr = gateway_listener.local_addr().unwrap();
         server_addrs.push(gateway_addr);
+        let handler_keys = gateway_keys.clone();
         threads.push(serve(gateway_listener, shutdown.clone(), move |req| {
-            handle_gateway_request(&ohttp_server, req)
+            handle_gateway_request(&handler_keys, req)
         }));
 
         // Relay: the real ohttp-relay crate, forwarding to the gateway.
@@ -109,6 +121,7 @@ impl TestHarness {
             gateway_url: format!("http://127.0.0.1:{}{}", gateway_addr.port(), GATEWAY_PATH),
             target_url: format!("http://127.0.0.1:{}", target_addr.port()),
             connect_proxy_url: format!("http://127.0.0.1:{}/", connect_addr.port()),
+            gateway_keys,
             shutdown,
             threads,
             server_addrs,
@@ -136,6 +149,34 @@ impl TestHarness {
     pub fn connect_proxy_url(&self) -> &str {
         &self.connect_proxy_url
     }
+
+    /// Rotate the gateway's key with no overlap: the previous key is retired
+    /// immediately, so a client still holding it gets a 400.
+    pub fn rotate_keys(&self) {
+        let mut keys = self.gateway_keys.write().unwrap();
+        let next = gateway_server(next_key_id(&keys));
+        *keys = vec![next];
+    }
+
+    /// Rotate the gateway's key with an overlap window: the key endpoint starts
+    /// advertising the new key while the previous one still decapsulates.
+    pub fn rotate_keys_overlap(&self) {
+        let mut keys = self.gateway_keys.write().unwrap();
+        let next = gateway_server(next_key_id(&keys));
+        keys.insert(0, next);
+    }
+}
+
+/// A key id no currently accepted key is using, so a rotation is always
+/// observable on the wire.
+fn next_key_id(keys: &[Arc<ohttp::Server>]) -> u8 {
+    (1u8..=u8::MAX)
+        .find(|id| {
+            !keys
+                .iter()
+                .any(|server| server.config().encode().unwrap()[0] == *id)
+        })
+        .expect("key id space exhausted")
 }
 
 impl Drop for TestHarness {
@@ -155,9 +196,11 @@ impl Drop for TestHarness {
 }
 
 fn handle_gateway_request(
-    server: &ohttp::Server,
+    keys: &GatewayKeys,
     req: HttpRequest,
 ) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let servers = keys.read().unwrap().clone();
+    let current = servers.first().expect("gateway has no keys");
     match (req.method.as_str(), req.path.split('?').next().unwrap()) {
         ("GET", GATEWAY_PATH) if req.path.contains("allowed_purposes") => (
             200,
@@ -170,11 +213,19 @@ fn handle_gateway_request(
         ("GET", GATEWAY_PATH) => (
             200,
             vec![("content-type".into(), "application/ohttp-keys".into())],
-            crate::KeyConfig::encode_list(&[server.config()]).unwrap(),
+            crate::KeyConfig::encode_list(&[current.config()]).unwrap(),
         ),
         ("POST", GATEWAY_PATH) => {
             assert_eq!(req.header("content-type"), Some("message/ohttp-req"));
-            let (bhttp_bytes, response_ctx) = server.decapsulate(&req.body).unwrap();
+            // A request sealed to a retired key is a client error, not a
+            // gateway fault: answer 400 as RFC 9458 §4.6 requires, so the
+            // client can recognize the rotation and refetch.
+            let Some((bhttp_bytes, response_ctx)) = servers
+                .iter()
+                .find_map(|server| server.decapsulate(&req.body).ok())
+            else {
+                return (400, vec![], b"Bad Request".to_vec());
+            };
             let inner = bhttp::Message::read_bhttp(&mut Cursor::new(&bhttp_bytes[..])).unwrap();
             let inner_response = forward_to_target(&inner);
 
@@ -299,8 +350,14 @@ fn read_request(stream: &mut TcpStream) -> Option<HttpRequest> {
 fn write_response(stream: &mut TcpStream, status: u16, headers: &[(String, String)], body: &[u8]) {
     // `connection: close` keeps the relay's pooled hyper client from reusing
     // a connection this one-request-per-connection server has already closed.
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        _ => "Unknown",
+    };
     let mut response = format!(
-        "HTTP/1.1 {status} OK\r\ncontent-length: {}\r\nconnection: close\r\n",
+        "HTTP/1.1 {status} {reason}\r\ncontent-length: {}\r\nconnection: close\r\n",
         body.len()
     );
     for (name, value) in headers {

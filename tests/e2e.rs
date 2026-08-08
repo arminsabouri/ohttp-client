@@ -294,3 +294,145 @@ fn e2e_wasm_bindgen_api() {
     );
     assert_eq!(response.body(), b"POST /echo?x=1 hello");
 }
+
+/// A gateway that rotates with no overlap breaks every client still holding
+/// the old key. With a refresh route configured, `send` absorbs that: the 400
+/// triggers a refetch and one retry, and the caller sees only success.
+#[cfg(feature = "bitreq")]
+#[test]
+fn e2e_rotation_is_transparent_to_send() {
+    use ohttp_client::KeyFetch;
+
+    let harness = TestHarness::start();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    // `Direct` because the harness relay is the real `ohttp-relay`, which does
+    // not offer CONNECT bootstrap here; `e2e_refresh_key_config_via_relay`
+    // covers the tunneled route.
+    let key_config = runtime
+        .block_on(ohttp_client::fetch_key_config(harness.gateway_url()))
+        .unwrap();
+    let client = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
+        key_config.clone(),
+    )
+    .with_key_refresh(harness.gateway_url(), KeyFetch::Direct);
+
+    let response = runtime
+        .block_on(client.post("/echo").body("hello").send())
+        .unwrap();
+    assert_eq!(response.body(), b"POST /echo hello");
+
+    harness.rotate_keys();
+
+    let response = runtime
+        .block_on(client.post("/echo").body("after").send())
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"POST /echo after");
+
+    // The retry succeeded because the client adopted the new key, not because
+    // the gateway kept honoring the old one.
+    assert_ne!(
+        client.key_config().encode().unwrap(),
+        key_config.encode().unwrap()
+    );
+}
+
+/// A gateway rotating with an overlap window keeps decapsulating with the
+/// retired key, so an in-flight client is never disrupted and never refetches.
+#[cfg(feature = "bitreq")]
+#[test]
+fn e2e_rotation_with_overlap_is_not_disruptive() {
+    use ohttp_client::KeyFetch;
+
+    let harness = TestHarness::start();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let key_config = runtime
+        .block_on(ohttp_client::fetch_key_config(harness.gateway_url()))
+        .unwrap();
+    let client = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
+        key_config.clone(),
+    )
+    .with_key_refresh(harness.gateway_url(), KeyFetch::Direct);
+
+    harness.rotate_keys_overlap();
+
+    let response = runtime
+        .block_on(client.post("/echo").body("hello").send())
+        .unwrap();
+    assert_eq!(response.body(), b"POST /echo hello");
+
+    // No 400, so no refetch: the client is still on the key it started with
+    // even though the endpoint now advertises a newer one.
+    assert_eq!(
+        client.key_config().encode().unwrap(),
+        key_config.encode().unwrap()
+    );
+}
+
+/// Without a refresh route there is nothing to recover with, so the rotation
+/// surfaces as an error the caller can recognize rather than a hang or panic.
+#[cfg(feature = "bitreq")]
+#[test]
+fn e2e_rotation_without_refresh_route_surfaces_error() {
+    let harness = TestHarness::start();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let key_config = runtime
+        .block_on(ohttp_client::fetch_key_config(harness.gateway_url()))
+        .unwrap();
+    let client = OhttpClient::new(
+        Url::parse(harness.relay_url()).unwrap(),
+        Url::parse(harness.target_url()).unwrap(),
+        key_config,
+    );
+
+    harness.rotate_keys();
+
+    let err = runtime
+        .block_on(client.post("/echo").body("hello").send())
+        .unwrap_err();
+    assert!(
+        matches!(err, ohttp_client::Error::UnexpectedStatus(400)),
+        "expected the gateway's 400 to reach the caller, got {err:?}"
+    );
+    assert!(err.is_possibly_stale_key());
+
+    // Refreshing is exactly what this client cannot do.
+    assert!(matches!(
+        runtime.block_on(client.refresh_key_config()),
+        Err(ohttp_client::Error::NoGatewayKeyUrl)
+    ));
+}
+
+/// The tunneled refresh route: the key refetch goes through HTTP `CONNECT` so
+/// the gateway never learns the client's IP, same as the bootstrap fetch.
+#[cfg(feature = "bitreq")]
+#[test]
+fn e2e_refresh_key_config_via_relay() {
+    let harness = TestHarness::start();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let client = runtime
+        .block_on(OhttpClient::from_gateway(
+            Url::parse(harness.connect_proxy_url()).unwrap(),
+            Url::parse(harness.target_url()).unwrap(),
+            harness.gateway_url(),
+        ))
+        .unwrap();
+    let original = client.key_config().encode().unwrap();
+
+    // Nothing rotated yet, so the refetch is a no-op — this is the signal
+    // `send` uses to decide a 400 was not about the key.
+    assert!(!runtime.block_on(client.refresh_key_config()).unwrap());
+    assert_eq!(client.key_config().encode().unwrap(), original);
+
+    harness.rotate_keys();
+    assert!(runtime.block_on(client.refresh_key_config()).unwrap());
+    assert_ne!(client.key_config().encode().unwrap(), original);
+}

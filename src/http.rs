@@ -3,6 +3,19 @@
 
 use crate::{parse_key_config, Error, KeyConfig, OhttpClient, Response, Url};
 
+/// How to reach the gateway's key endpoint when refetching after a rotation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyFetch {
+    /// Tunnel the GET through the relay with HTTP `CONNECT`, so the gateway
+    /// only ever sees the relay's IP. What [`OhttpClient::from_gateway`] uses.
+    /// Requires a relay that offers `CONNECT` bootstrap.
+    ViaRelay,
+    /// GET the gateway directly. Reveals the client's IP to the gateway, which
+    /// is what routing through a relay exists to prevent — pick this only when
+    /// the relay does not tunnel, or when the gateway already knows the client.
+    Direct,
+}
+
 /// GET the gateway's key endpoint with `bitreq` and parse the result.
 pub async fn fetch_key_config(gateway_key_url: &str) -> Result<KeyConfig, Error> {
     let res = bitreq::get(gateway_key_url).send_async().await?;
@@ -55,7 +68,38 @@ impl OhttpClient {
         gateway_key_url: &str,
     ) -> Result<Self, Error> {
         let key_config = fetch_key_config_via_relay(gateway_key_url, &relay).await?;
-        Ok(Self::new(relay, target, key_config))
+        Ok(Self::new(relay, target, key_config)
+            .with_key_refresh(gateway_key_url, KeyFetch::ViaRelay))
+    }
+
+    /// Let this client recover from key rotations by refetching
+    /// `gateway_key_url` over `route`.
+    ///
+    /// [`Self::from_gateway`] sets this up already. Use it on a client built
+    /// with [`Self::new`], or to override the route — notably
+    /// [`KeyFetch::Direct`] when the relay does not offer `CONNECT` bootstrap.
+    pub fn with_key_refresh(mut self, gateway_key_url: impl Into<String>, route: KeyFetch) -> Self {
+        self.key_refresh = Some((gateway_key_url.into(), route));
+        self
+    }
+
+    /// Refetch the gateway's key config and adopt it, returning whether it
+    /// actually changed.
+    ///
+    /// Recovers from a rotation, after which the gateway rejects requests
+    /// sealed to the key it retired. [`RequestBuilder::send`] calls this for
+    /// you; call it directly only if you drive [`OhttpClient::encapsulate`]
+    /// yourself.
+    ///
+    /// Returns [`Error::NoGatewayKeyUrl`] if neither [`Self::from_gateway`] nor
+    /// [`Self::with_key_refresh`] gave the client a key endpoint to refetch.
+    pub async fn refresh_key_config(&self) -> Result<bool, Error> {
+        let (url, route) = self.key_refresh.as_ref().ok_or(Error::NoGatewayKeyUrl)?;
+        let key_config = match route {
+            KeyFetch::ViaRelay => fetch_key_config_via_relay(url, &self.relay).await?,
+            KeyFetch::Direct => fetch_key_config(url).await?,
+        };
+        Ok(self.set_key_config(key_config))
     }
 
     /// Start building an inner request with the given method and path on the
@@ -163,7 +207,35 @@ impl RequestBuilder<'_> {
 
     /// Encapsulate the inner request, POST it to the relay, and decapsulate
     /// the inner response.
+    ///
+    /// If the gateway rejects the request in a way consistent with a key
+    /// rotation ([`Error::is_possibly_stale_key`]), the client's key config is
+    /// refetched and the request is sent once more — at most two attempts, no
+    /// backoff. The retry is skipped, and the original error returned, when the
+    /// refetch fails or comes back with the same key: a 400 that survives an
+    /// unchanged key was never about the key.
+    ///
+    /// Two requests failing concurrently will each refetch. That is harmless
+    /// (the fetch is an idempotent GET and the configs agree), so there is no
+    /// single-flight guard.
     pub async fn send(self) -> Result<Response, Error> {
+        let err = match self.attempt().await {
+            Ok(response) => return Ok(response),
+            Err(err) => err,
+        };
+        if !err.is_possibly_stale_key() {
+            return Err(err);
+        }
+        // Report the request's failure, not the recovery's: a refetch that
+        // errors or returns the same key leaves the original error the
+        // meaningful one.
+        match self.client.refresh_key_config().await {
+            Ok(true) => self.attempt().await,
+            Ok(false) | Err(_) => Err(err),
+        }
+    }
+
+    async fn attempt(&self) -> Result<Response, Error> {
         let headers: Vec<(&str, &str)> = self
             .headers
             .iter()

@@ -43,6 +43,10 @@
 //! relay) and builds the client, and a request builder does encapsulate/send/
 //! decapsulate:
 //! `client.post("/resource").header("content-type", "text/plain").body("hello").send().await?`.
+//! That builder also absorbs gateway key rotations: a request rejected with a
+//! stale key is retried once against a freshly fetched config. Without
+//! `bitreq`, do the same by hand — see the key rotation section on
+//! [`OhttpClient`].
 //!
 //! For `wasm32-unknown-unknown` (browsers), enable the `wasm` feature for
 //! [`wasm-bindgen`](https://rustwasm.github.io/wasm-bindgen/) exports (and the
@@ -51,7 +55,7 @@
 //! `wasm_js` alone is enough if you bind the Rust API without `wasm-bindgen`.
 
 use std::io::Cursor;
-use std::sync::Once;
+use std::sync::{Arc, Once, PoisonError, RwLock};
 
 use bhttp::{Message, Mode};
 
@@ -64,7 +68,7 @@ pub use error::Error;
 #[cfg(feature = "bitreq")]
 mod http;
 #[cfg(feature = "bitreq")]
-pub use http::{fetch_key_config, fetch_key_config_via_relay, RequestBuilder};
+pub use http::{fetch_key_config, fetch_key_config_via_relay, KeyFetch, RequestBuilder};
 
 #[cfg(feature = "wasm")]
 mod wasm;
@@ -110,6 +114,16 @@ fn has_usable_suite(config: &KeyConfig) -> bool {
     config.encode().is_ok_and(|enc| !enc.ends_with(&[0, 0]))
 }
 
+/// Whether two key configs are the same key, for telling a rotated config from
+/// an unchanged one.
+///
+/// `key_id`, `pk` and the suite list are all private, so this compares the
+/// encoding — which covers exactly those fields. If either fails to encode the
+/// answer is "different", so a refetch is never mistaken for a no-op.
+fn same_key_config(a: &KeyConfig, b: &KeyConfig) -> bool {
+    matches!((a.encode(), b.encode()), (Ok(a), Ok(b)) if a == b)
+}
+
 fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(ohttp::init);
@@ -128,14 +142,31 @@ fn init() {
 /// Optionally set a [`known_length`](OhttpClient::known_length) to pad every
 /// encapsulated request's BHTTP plaintext to a fixed size.
 ///
+/// # Key rotation
+///
+/// Gateways rotate their keys, and a config carries no expiry to warn you (the
+/// wire format is only key id, KEM, public key, and cipher suites). A client
+/// still holding the old key gets a 4xx from the gateway, which cannot
+/// decapsulate. Recover with [`set_key_config`](Self::set_key_config). With the
+/// `bitreq` feature this is automatic: a client built by `from_gateway` keeps
+/// the key endpoint URL, and `RequestBuilder::send` refetches and retries once.
+///
+/// Clones **share** one key config: rotating it on any clone rotates it for all
+/// of them. The relay, target, and padding are per-clone.
+///
 /// [`encapsulate`]: OhttpClient::encapsulate
 #[derive(Debug, Clone)]
 pub struct OhttpClient {
-    key_config: KeyConfig,
+    key_config: Arc<RwLock<KeyConfig>>,
     relay: Url,
     /// Target origin (scheme + host [+ port] [+ base path]).
     target: Url,
     known_length: Option<usize>,
+    /// RFC 9540 key endpoint and how to reach it, so the config can be
+    /// refetched after a rotation. Set by [`OhttpClient::from_gateway`] or
+    /// [`OhttpClient::with_key_refresh`].
+    #[cfg(feature = "bitreq")]
+    pub(crate) key_refresh: Option<(String, KeyFetch)>,
 }
 
 impl OhttpClient {
@@ -148,9 +179,39 @@ impl OhttpClient {
         Self {
             relay,
             target,
-            key_config,
+            key_config: Arc::new(RwLock::new(key_config)),
             known_length: None,
+            #[cfg(feature = "bitreq")]
+            key_refresh: None,
         }
+    }
+
+    /// The gateway key config this client is currently encapsulating to.
+    pub fn key_config(&self) -> KeyConfig {
+        self.read_key_config()
+    }
+
+    /// Adopt `key_config` for this client and every clone of it, returning
+    /// whether it differs from the one already in use.
+    ///
+    /// Call this after refetching the gateway's key endpoint in response to a
+    /// rotation. A `false` return means the gateway is still advertising the
+    /// same key, so whatever failed was not a stale key — do not retry.
+    pub fn set_key_config(&self, key_config: KeyConfig) -> bool {
+        let mut current = self
+            .key_config
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let changed = !same_key_config(&key_config, &current);
+        *current = key_config;
+        changed
+    }
+
+    fn read_key_config(&self) -> KeyConfig {
+        self.key_config
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Pad every encapsulated request's BHTTP plaintext to exactly
@@ -204,7 +265,7 @@ impl OhttpClient {
         }
         let bhttp_bytes = write_bhttp_payload(&inner, self.known_length)?;
 
-        let (encapsulated, ctx) = ohttp::ClientRequest::from_config(&mut self.key_config.clone())?
+        let (encapsulated, ctx) = ohttp::ClientRequest::from_config(&mut self.read_key_config())?
             .encapsulate(&bhttp_bytes)?;
         Ok((
             OhttpRequest {
@@ -572,6 +633,25 @@ mod tests {
         // The selected config encapsulates without panicking.
         let client = test_client(parsed);
         assert!(client.encapsulate("GET", "/", &[], &[], None).is_ok());
+    }
+
+    #[test]
+    fn set_key_config_is_shared_by_clones() {
+        let config = test_key_config();
+        let client = test_client(config.clone());
+        let clone = client.clone();
+
+        // Same key: not a rotation. Callers rely on `false` to decide *not* to
+        // retry a request that failed for some other reason.
+        assert!(!client.set_key_config(config));
+
+        // A different key is a rotation, and the clone sees it.
+        let rotated = test_key_config();
+        assert!(client.set_key_config(rotated.clone()));
+        assert_eq!(
+            clone.key_config().encode().unwrap(),
+            rotated.encode().unwrap()
+        );
     }
 
     #[test]
