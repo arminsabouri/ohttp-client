@@ -3,13 +3,12 @@
 //! forwards it to the gateway, which forwards the inner request to a target
 //! on a different origin than the gateway.
 
+use ohttp_client::harness::TestHarness;
 use ohttp_client::{parse_key_config, OhttpClient, Url};
-
-mod harness;
 
 #[test]
 fn e2e_through_relay_and_gateway() {
-    let harness = harness::TestHarness::start();
+    let harness = TestHarness::start();
 
     // Bootstrap: fetch the key config from the gateway ourselves (sans-IO).
     let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
@@ -64,7 +63,7 @@ fn e2e_through_relay_and_gateway() {
 /// `read_bhttp` ignores the pad and the rest of the stack still works.
 #[test]
 fn e2e_with_known_length_padding() {
-    let harness = harness::TestHarness::start();
+    let harness = TestHarness::start();
 
     let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
     assert_eq!(keys_res.status_code, 200);
@@ -134,7 +133,7 @@ fn e2e_with_known_length_padding() {
 #[cfg(feature = "bitreq")]
 #[test]
 fn e2e_send_with_bitreq_feature() {
-    let harness = harness::TestHarness::start();
+    let harness = TestHarness::start();
 
     let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
     assert_eq!(keys_res.status_code, 200);
@@ -170,7 +169,7 @@ fn e2e_send_with_bitreq_feature() {
 #[cfg(feature = "bitreq")]
 #[test]
 fn e2e_fetch_key_config_and_send_with_bitreq() {
-    let harness = harness::TestHarness::start();
+    let harness = TestHarness::start();
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
     let key_config = runtime
@@ -212,7 +211,7 @@ fn e2e_fetch_key_config_and_send_with_bitreq() {
 #[cfg(feature = "bitreq")]
 #[test]
 fn e2e_from_gateway() {
-    let harness = harness::TestHarness::start();
+    let harness = TestHarness::start();
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
     let client = runtime
@@ -255,7 +254,7 @@ fn e2e_from_gateway() {
 fn e2e_wasm_bindgen_api() {
     use ohttp_client::WasmOhttpClient;
 
-    let harness = harness::TestHarness::start();
+    let harness = TestHarness::start();
 
     let keys_res = bitreq::get(harness.gateway_url()).send().unwrap();
     assert_eq!(keys_res.status_code, 200);

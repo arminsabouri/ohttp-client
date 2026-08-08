@@ -56,7 +56,7 @@ impl TestHarness {
 
         // Gateway: serves its key config, opts in to relaying, and
         // decapsulates requests, forwarding them to the inner target.
-        let key_config = ohttp_client::KeyConfig::new(
+        let key_config = crate::KeyConfig::new(
             1,
             ohttp::hpke::Kem::X25519Sha256,
             vec![ohttp::SymmetricSuite::new(
@@ -170,7 +170,7 @@ fn handle_gateway_request(
         ("GET", GATEWAY_PATH) => (
             200,
             vec![("content-type".into(), "application/ohttp-keys".into())],
-            ohttp_client::KeyConfig::encode_list(&[server.config()]).unwrap(),
+            crate::KeyConfig::encode_list(&[server.config()]).unwrap(),
         ),
         ("POST", GATEWAY_PATH) => {
             assert_eq!(req.header("content-type"), Some("message/ohttp-req"));

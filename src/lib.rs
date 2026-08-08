@@ -71,6 +71,16 @@ mod wasm;
 #[cfg(feature = "wasm")]
 pub use wasm::{EncapsulateBuilder, Encapsulated, WasmOhttpClient, WasmResponse};
 
+/// End-to-end test utilities: local target, gateway, relay, and CONNECT proxy.
+///
+/// Enable with the `harness` feature (typically as a `dev-dependency`):
+/// ```toml
+/// [dev-dependencies]
+/// ohttp-client = { version = "...", features = ["harness"] }
+/// ```
+#[cfg(feature = "harness")]
+pub mod harness;
+
 /// Media type of an encapsulated request, per RFC 9458.
 pub const OHTTP_REQ_CONTENT_TYPE: &str = "message/ohttp-req";
 

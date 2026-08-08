@@ -3,11 +3,10 @@
 //! Used by the JS e2e test. Start with:
 //! `cargo run --features harness --bin ohttp-test-harness`
 
-#[path = "../../tests/harness/mod.rs"]
-mod harness;
+use ohttp_client::harness::TestHarness;
 
 fn main() {
-    let h = harness::TestHarness::start();
+    let h = TestHarness::start();
     // Prefix so consumers can ignore other crates' stdout noise (e.g. ohttp-relay).
     println!(
         "OHTTP_HARNESS\t{{\"relay_url\":\"{}\",\"gateway_url\":\"{}\",\"target_url\":\"{}\",\"connect_proxy_url\":\"{}\"}}",

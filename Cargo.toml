@@ -16,7 +16,9 @@ bitreq = ["dep:bitreq"]
 wasm_js = ["getrandom/wasm_js", "dep:getrandom02"]
 # `wasm-bindgen` exports for browser hosts (implies `wasm_js`).
 wasm = ["wasm_js", "dep:wasm-bindgen"]
-# Test harness binary for JS e2e (`ohttp-test-harness`).
+# Export `ohttp_client::harness` (local target/gateway/relay/CONNECT proxy)
+# for downstream integration tests, and build the `ohttp-test-harness` binary
+# used by the JS e2e.
 harness = ["bitreq", "dep:ohttp-relay", "dep:tokio"]
 
 [dependencies]
@@ -41,4 +43,8 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 [[bin]]
 name = "ohttp-test-harness"
 path = "src/bin/ohttp-test-harness.rs"
+required-features = ["harness"]
+
+[[test]]
+name = "e2e"
 required-features = ["harness"]

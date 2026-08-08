@@ -43,6 +43,22 @@ This keeps the crate portable. It works anywhere, including in the browser.
   exports for browser hosts, plus the JS RNG backend. Keep using the sans-IO
   flow from JS: encapsulate, `fetch` the outer request yourself, then
   decapsulate. See [`js/`](js/) for the wrapper and an example.
+- **`harness`**: exports `ohttp_client::harness::TestHarness` — a local target,
+  OHTTP gateway, `ohttp-relay`, and generic `CONNECT` proxy for integration
+  tests. Also builds the `ohttp-test-harness` binary used by the JS e2e.
+  Pull it in as a `dev-dependency`:
+
+  ```toml
+  [dev-dependencies]
+  ohttp-client = { version = "0.1", features = ["harness"] }
+  ```
+
+  ```rust
+  use ohttp_client::harness::TestHarness;
+
+  let h = TestHarness::start();
+  // h.relay_url(), h.gateway_url(), h.target_url(), h.connect_proxy_url()
+  ```
 
 ## WebAssembly
 
