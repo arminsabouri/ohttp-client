@@ -2,7 +2,9 @@
 name = "ohttp-client"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75.0"
+# Set by `ohttp-relay` (harness feature), not by this crate's source.
+# Cargo.lock pins idna_adapter 1.2.0; 1.2.2 pulls icu 2.x, which needs 1.86.
+rust-version = "1.85.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
