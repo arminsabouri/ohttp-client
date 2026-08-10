@@ -1,5 +1,8 @@
-# Run the full validation suite: fmt check, clippy, tests, wasm, js e2e, audit.
-check: fmt-check lint test check-wasm test-js audit
+# Single source of truth: `rust-version` in Cargo.toml.
+MSRV := `grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2`
+
+# Run the full validation suite: fmt check, clippy, tests, wasm, js e2e, msrv, audit.
+check: fmt-check lint test check-wasm test-js msrv audit
 
 # Format all code.
 fmt:
@@ -30,6 +33,13 @@ build-wasm:
 # Build wasm and run the JS e2e against the Rust test harness.
 test-js: build-wasm
     node js/e2e.test.js
+
+# Verify the crate still builds on its declared MSRV.
+# `--locked` is load-bearing: the MSRV holds only with Cargo.lock's idna_adapter
+# pin, so a lockfile update that raises the floor must fail here, not silently.
+msrv:
+    @rustup toolchain list | grep -q '^{{MSRV}}' || (echo "missing toolchain: rustup toolchain install {{MSRV}}" && exit 1)
+    cargo +{{MSRV}} check --locked --all-features --all-targets
 
 # Audit dependencies for known security advisories.
 audit:
