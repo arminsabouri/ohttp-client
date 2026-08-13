@@ -1,0 +1,31 @@
+name: Update flake.lock
+
+# Because CI's toolchain comes from the flake, `flake.lock` is what pins the
+# Rust version — nothing bumps rustc on its own any more. This job is that
+# bump: it opens a PR weekly so new stable releases (and their new clippy
+# lints) show up as a reviewable change rather than a surprise red build.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: DeterminateSystems/update-flake-lock@v24
+        with:
+          pr-title: "Update flake.lock"
+          pr-body: |
+            Automated `nix flake update`.
+
+            This moves the pinned Rust toolchain, so check the CI run for new
+            clippy lints before merging.
+          # NOTE: with the default GITHUB_TOKEN, GitHub will not run CI on the
+          # PR this opens. Swap in a PAT as `token:` if you want CI to fire
+          # automatically; otherwise close/reopen the PR to trigger it.

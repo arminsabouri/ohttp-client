@@ -34,28 +34,44 @@
         rustMsrv = pkgs.rust-bin.stable.${msrv}.default.override {
           targets = [ "wasm32-unknown-unknown" ];
         };
+
+        # Everything `just check` needs except the MSRV toolchain.
+        stableTools = [
+          rustStable
+          pkgs.cargo-audit
+          pkgs.wasm-pack
+          pkgs.binaryen # wasm-opt, so wasm-pack does not fetch its own
+          pkgs.nodejs_22
+          pkgs.just
+          pkgs.pkg-config
+        ];
+
+        # `just msrv` reads this instead of shelling out to rustup.
+        msrvEnv = {
+          MSRV_CARGO = "${rustMsrv}/bin/cargo";
+        };
       in
       {
-        devShells.default = pkgs.mkShell {
-          packages = [
-            rustStable
-            pkgs.cargo-audit
-            pkgs.wasm-pack
-            pkgs.binaryen # wasm-opt, so wasm-pack does not fetch its own
-            pkgs.nodejs_22
-            pkgs.just
-            pkgs.pkg-config
-          ];
+        devShells = {
+          # Local development: both toolchains, so `just check` runs end to end.
+          default = pkgs.mkShell (msrvEnv // {
+            packages = stableTools;
 
-          # `just msrv` picks this up instead of shelling out to rustup.
-          MSRV_CARGO = "${rustMsrv}/bin/cargo";
+            RUST_SRC_PATH = "${rustStable}/lib/rustlib/src/rust/library";
 
-          RUST_SRC_PATH = "${rustStable}/lib/rustlib/src/rust/library";
+            shellHook = ''
+              echo "ohttp-client dev shell — rust $(rustc --version | cut -d' ' -f2), msrv ${msrv}"
+              echo "run 'just' to list recipes"
+            '';
+          });
 
-          shellHook = ''
-            echo "ohttp-client dev shell — rust $(rustc --version | cut -d' ' -f2), msrv ${msrv}"
-            echo "run 'just' to list recipes"
-          '';
+          ci = pkgs.mkShell {
+            packages = stableTools;
+          };
+
+          msrv = pkgs.mkShell (msrvEnv // {
+            packages = [ pkgs.just pkgs.pkg-config ];
+          });
         };
 
         formatter = pkgs.nixpkgs-fmt;

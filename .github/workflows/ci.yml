@@ -10,45 +10,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The toolchain (rust, wasm-pack, wasm-opt, node, just) comes from the flake,
+  # so this job runs the same versions as `nix develop` locally. Cargo's build
+  # cache is separate — Nix caches the toolchain, `rust-cache` caches target/.
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v6
         with:
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
+          primary-key: nix-test-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix', 'Cargo.toml') }}
+          restore-prefixes-first-match: nix-test-${{ runner.os }}-
+          gc-max-store-size-linux: 2G
+          purge: true
+          purge-prefixes: nix-test-${{ runner.os }}-
+          purge-created: 604800
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@just
       - name: fmt
-        run: just fmt-check
+        run: nix develop .#ci --command just fmt-check
       - name: clippy
-        run: just lint
+        run: nix develop .#ci --command just lint
       - name: test
-        run: just test
+        run: nix develop .#ci --command just test
       - name: wasm
-        run: just check-wasm
-      - name: install wasm-pack
-        uses: jetli/wasm-pack-action@v0.4.0
+        run: nix develop .#ci --command just check-wasm
       - name: js e2e
-        run: just test-js
+        run: nix develop .#ci --command just test-js
 
   # Separate job so an MSRV break is labelled as one, not buried in `test`.
+  # Uses the `msrv` shell, which carries only the floor toolchain.
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: read declared MSRV
-        id: msrv
-        run: echo "version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v6
         with:
-          toolchain: ${{ steps.msrv.outputs.version }}
+          primary-key: nix-msrv-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix', 'Cargo.toml') }}
+          restore-prefixes-first-match: nix-msrv-${{ runner.os }}-
+          gc-max-store-size-linux: 2G
+          purge: true
+          purge-prefixes: nix-msrv-${{ runner.os }}-
+          purge-created: 604800
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@just
       - name: msrv
-        run: just msrv
+        run: nix develop .#msrv --command just msrv
 
+  # Deliberately not nixified: an audit wants the newest cargo-audit and a
+  # fresh advisory DB, so pinning it to flake.lock would work against the job.
   audit:
     runs-on: ubuntu-latest
     steps:
