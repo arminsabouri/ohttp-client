@@ -37,9 +37,15 @@ test-js: build-wasm
 # Verify the crate still builds on its declared MSRV.
 # `--locked` is load-bearing: the MSRV holds only with Cargo.lock's idna_adapter
 # pin, so a lockfile update that raises the floor must fail here, not silently.
+# `MSRV_CARGO` (set by the nix dev shell) points straight at an MSRV cargo;
+# without it we fall back to rustup's toolchain selection.
 msrv:
-    @rustup toolchain list | grep -q '^{{MSRV}}' || (echo "missing toolchain: rustup toolchain install {{MSRV}}" && exit 1)
-    cargo +{{MSRV}} check --locked --all-features --all-targets
+    @if [ -n "${MSRV_CARGO:-}" ]; then \
+        "$MSRV_CARGO" check --locked --all-features --all-targets; \
+    else \
+        rustup toolchain list | grep -q '^{{MSRV}}' || (echo "missing toolchain: rustup toolchain install {{MSRV}}" && exit 1); \
+        cargo +{{MSRV}} check --locked --all-features --all-targets; \
+    fi
 
 # Audit dependencies for known security advisories.
 audit:
