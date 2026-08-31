@@ -2,6 +2,15 @@
 name = "ohttp-client"
 version = "0.1.0"
 edition = "2021"
+description = "Minimal Rust OHTTP client"
+license = "MIT"
+homepage = "https://github.com/arminsabouri/ohttp-client"
+repository = "https://github.com/arminsabouri/ohttp-client"
+keywords = ["networking", "OHTTP", "cryptography"]
+categories = ["cryptography", "network-programming", "web-programming::http-client"]
+
+
+
 # Set by `ohttp-relay` (harness feature), not by this crate's source.
 # Cargo.lock pins idna_adapter 1.2.0; 1.2.2 pulls icu 2.x, which needs 1.86.
 rust-version = "1.85.0"
