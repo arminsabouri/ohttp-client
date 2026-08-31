@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "ohttp-client"
-version = "0.1.0"
+version = "0.0.0-alpha"
 dependencies = [
  "bhttp",
  "bitreq",
