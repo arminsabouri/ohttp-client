@@ -1,9 +1,9 @@
 {
   "name": "ohttp-client",
-  "version": "0.1.0",
+  "version": "0.0.0-alpha",
   "private": true,
   "type": "module",
-  "description": "JS helpers for the ohttp-client wasm build",
+  "description": "Minimal OHTTP client",
   "exports": "./index.js",
   "scripts": {
     "build": "wasm-pack build --target web --out-dir pkg --out-name ohttp_client .. -- --features wasm",
