@@ -1,7 +1,12 @@
-# JS / wasm bindings
+# OHTTP Client
 
-Thin `fetch` wrapper around the crate's `wasm-bindgen` exports. The compiled
-wasm package lives in `pkg/` (generated; not checked in to version control).
+A minimal [Oblivious HTTP (RFC 9458)](https://www.rfc-editor.org/rfc/rfc9458)
+client. It handles the parts every OHTTP client needs: BHTTP inner message
+construction and parsing, request encapsulation / response decapsulation, and
+[key config parsing (RFC 9540)](https://www.rfc-editor.org/rfc/rfc9540), so you
+can tunnel requests through a relay to a gateway without exposing them to either.
+
+This library is a thin wrapper over the [rust crate](https://crates.io/crates/ohttp-client) using WASM bindings.
 
 ## Prerequisites
 
@@ -15,9 +20,6 @@ cargo install wasm-pack
 ```
 
 ## Build
-
-From this directory:
-
 ```sh
 npm run build
 ```
