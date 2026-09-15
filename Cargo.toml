@@ -11,9 +11,8 @@ categories = ["cryptography", "network-programming", "web-programming::http-clie
 
 
 
-# Set by `ohttp-relay` (harness feature), not by this crate's source.
-# Cargo.lock pins idna_adapter 1.2.0; 1.2.2 pulls icu 2.x, which needs 1.86.
-rust-version = "1.85.0"
+# Set by `aes` 0.9 (via `ohttp` 0.8), not by this crate's source.
+rust-version = "1.89.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -21,10 +20,10 @@ crate-type = ["cdylib", "rlib"]
 [features]
 bitreq = ["dep:bitreq"]
 # Browser / `wasm32-unknown-unknown`: enables getrandom's JS backend
-# (`crypto.getRandomValues`) on both the 0.3 line we use directly and the
-# transitive 0.2 line pulled in by the AEAD stack. Enable this in the app when
-# targeting the web; WASI targets do not need it.
-wasm_js = ["getrandom/wasm_js", "dep:getrandom02"]
+# (`crypto.getRandomValues`) on the 0.3 line we use directly and the
+# transitive 0.2 and 0.4 lines pulled in by the AEAD/hpke stack. Enable this in
+# the app when targeting the web; WASI targets do not need it.
+wasm_js = ["getrandom/wasm_js", "dep:getrandom02", "dep:getrandom04"]
 # `wasm-bindgen` exports for browser hosts (implies `wasm_js`).
 wasm = ["wasm_js", "dep:wasm-bindgen"]
 # Export `ohttp_client::harness` (local target/gateway/relay/CONNECT proxy)
@@ -35,11 +34,13 @@ harness = ["bitreq", "dep:ohttp-relay", "dep:tokio"]
 [dependencies]
 bhttp = "0.7.2"
 bitreq = { version = "0.3.7", features = ["async", "proxy"], optional = true }
-getrandom = "0.3"
+getrandom = { version = "0.3", features = ["std"] }
 # Feature-unification shim: pulls getrandom 0.2 with `js` so the transitive
 # AEAD/hpke stack compiles for `wasm32-unknown-unknown`.
 getrandom02 = { package = "getrandom", version = "0.2", optional = true, features = ["js"] }
-ohttp = "0.7.2"
+# Same shim for the getrandom 0.4 line that hpke 0.14 pulls in.
+getrandom04 = { package = "getrandom", version = "0.4", optional = true, features = ["wasm_js"] }
+ohttp = "0.8.0"
 ohttp-relay = { version = "0.0.11", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }

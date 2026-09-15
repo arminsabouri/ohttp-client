@@ -35,8 +35,8 @@ test-js: build-wasm
     node js/e2e.test.js
 
 # Verify the crate still builds on its declared MSRV.
-# `--locked` is load-bearing: the MSRV holds only with Cargo.lock's idna_adapter
-# pin, so a lockfile update that raises the floor must fail here, not silently.
+# `--locked` is load-bearing: a lockfile update that raises the floor must fail
+# here, not silently.
 # `MSRV_CARGO` (set by the nix dev shell) points straight at an MSRV cargo;
 # without it we fall back to rustup's toolchain selection.
 msrv:
