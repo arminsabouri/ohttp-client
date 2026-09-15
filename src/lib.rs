@@ -367,11 +367,18 @@ mod tests {
     use ohttp::hpke::{Aead, Kdf, Kem};
     use ohttp::SymmetricSuite;
 
+    /// Every KEM `ohttp` implements, including the post-quantum X-Wing.
+    const SUPPORTED_KEMS: [Kem; 3] = [Kem::X25519Sha256, Kem::P256Sha256, Kem::XWing];
+
     fn test_key_config() -> KeyConfig {
+        key_config_with_kem(Kem::X25519Sha256)
+    }
+
+    fn key_config_with_kem(kem: Kem) -> KeyConfig {
         init();
         KeyConfig::new(
             1,
-            Kem::X25519Sha256,
+            kem,
             vec![SymmetricSuite::new(Kdf::HkdfSha256, Aead::ChaCha20Poly1305)],
         )
         .unwrap()
@@ -525,6 +532,39 @@ mod tests {
         assert!(matches!(parse_key_config(&[]), Err(Error::NoKeyConfig)));
     }
 
+    #[test]
+    fn parse_key_config_accepts_every_supported_kem() {
+        for kem in SUPPORTED_KEMS {
+            let config = key_config_with_kem(kem);
+            let encoded = KeyConfig::encode_list(&[&config]).unwrap();
+            let parsed = parse_key_config(&encoded).unwrap();
+            assert_eq!(parsed.encode().unwrap(), config.encode().unwrap());
+        }
+    }
+
+    #[test]
+    fn round_trips_with_every_supported_kem() {
+        for kem in SUPPORTED_KEMS {
+            let server = ohttp::Server::new(key_config_with_kem(kem)).unwrap();
+            let client = test_client(server.config().clone());
+
+            let (req, ctx) = client.encapsulate("GET", "/", &[], &[], None).unwrap();
+            let (_, server_ctx) = server.decapsulate(&req.body).unwrap();
+
+            let mut inner_res = Message::response(bhttp::StatusCode::try_from(200u16).unwrap());
+            inner_res.write_content(b"ok");
+            let mut res_bytes = Vec::new();
+            inner_res
+                .write_bhttp(Mode::KnownLength, &mut res_bytes)
+                .unwrap();
+            let enc_res = server_ctx.encapsulate(&res_bytes).unwrap();
+
+            let response = ctx.decapsulate(&enc_res).unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.body(), b"ok");
+        }
+    }
+
     /// Encode `configs` as an `application/ohttp-keys` list, prefixing each
     /// with its two-byte length (mirrors `KeyConfig::encode_list`, but takes
     /// raw bytes so tests can build configs the crate refuses to construct).
@@ -552,6 +592,24 @@ mod tests {
             u16::from(Aead::Aes256Gcm) as u8,
         ]);
         encoded
+    }
+
+    #[test]
+    fn parse_key_config_skips_unsupported_kem() {
+        // P-384 (0x0011) is in the spec but not in `ohttp`; `decode_list` drops
+        // the config, so a later usable one is still selected.
+        let mut unsupported = test_key_config().encode().unwrap();
+        unsupported[1..3].copy_from_slice(&0x0011u16.to_be_bytes());
+        let usable = test_key_config();
+
+        let encoded = encode_raw_list(&[unsupported.clone(), usable.encode().unwrap()]);
+        let parsed = parse_key_config(&encoded).unwrap();
+        assert_eq!(parsed.encode().unwrap(), usable.encode().unwrap());
+
+        assert!(matches!(
+            parse_key_config(&encode_raw_list(&[unsupported])),
+            Err(Error::NoKeyConfig)
+        ));
     }
 
     #[test]
