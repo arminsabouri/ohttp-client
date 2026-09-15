@@ -8,9 +8,9 @@ construction and parsing, request encapsulation / response decapsulation, and
 [key config parsing (RFC 9540)](https://www.rfc-editor.org/rfc/rfc9540), so you
 can tunnel requests through a relay to a gateway without exposing them to either.
 
-The only supported KEM is DHKEM(X25519, HKDF-SHA256), because the underlying
-[`ohttp`](https://crates.io/crates/ohttp) crate implements no other. Gateways
-that offer only P-256, P-384, P-521, X448, or post-quantum KEMs will not work.
+The client uses whichever KEM a gateway advertises, so it works with every KEM
+[`ohttp`](https://crates.io/crates/ohttp) implements: DHKEM(X25519, HKDF-SHA256),
+DHKEM(P-256, HKDF-SHA256), and X-Wing (ML-KEM-768 + X25519).
 
 ## Sans-IO by default
 

@@ -7,6 +7,7 @@ construction and parsing, request encapsulation / response decapsulation, and
 can tunnel requests through a relay to a gateway without exposing them to either.
 
 This library is a thin wrapper over the [rust crate](https://crates.io/crates/ohttp-client) using WASM bindings.
+It supports the X25519, P-256, and X-Wing KEMs.
 
 ## Prerequisites
 
