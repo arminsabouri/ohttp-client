@@ -1,6 +1,6 @@
 {
   "name": "ohttp-client",
-  "version": "0.0.0-alpha",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "Minimal OHTTP client",

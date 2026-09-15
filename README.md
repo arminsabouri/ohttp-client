@@ -54,7 +54,7 @@ This keeps the crate portable. It works anywhere, including in the browser.
 
   ```toml
   [dev-dependencies]
-  ohttp-client = { version = "0.1", features = ["harness"] }
+  ohttp-client = { version = "0.0.1", features = ["harness"] }
   ```
 
   ```rust
