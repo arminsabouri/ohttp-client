@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use crate::ohttp;
+
 /// Gateway opt-in advertised to the relay's prober: ALPN-style list
 /// containing the one purpose `ohttp_relay` requires before it forwards.
 const ALLOWED_PURPOSES_BODY: &[u8] = b"\x00\x01\x2aTEST 454403bb-9f7b-4385-b31f-acd2dae20b7e";
@@ -56,9 +58,13 @@ impl TestHarness {
 
         // Gateway: serves its key config, opts in to relaying, and
         // decapsulates requests, forwarding them to the inner target.
+        #[cfg(not(feature = "secp256k1"))]
+        let kem = ohttp::hpke::Kem::X25519Sha256;
+        #[cfg(feature = "secp256k1")]
+        let kem = ohttp::hpke::Kem::K256Sha256;
         let key_config = crate::KeyConfig::new(
             1,
-            ohttp::hpke::Kem::X25519Sha256,
+            kem,
             vec![ohttp::SymmetricSuite::new(
                 ohttp::hpke::Kdf::HkdfSha256,
                 ohttp::hpke::Aead::ChaCha20Poly1305,

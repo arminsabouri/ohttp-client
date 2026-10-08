@@ -1,7 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("ohttp: {0}")]
-    Ohttp(#[from] ohttp::Error),
+    Ohttp(#[from] crate::ohttp::Error),
     #[error("bhttp: {0}")]
     Bhttp(#[from] bhttp::Error),
     #[error("url: {0}")]

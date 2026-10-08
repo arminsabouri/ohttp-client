@@ -55,6 +55,17 @@ use std::sync::Once;
 
 use bhttp::{Message, Mode};
 
+// The OHTTP implementation. Submodules must import this as `crate::ohttp`:
+// a bare `ohttp::` path there names the `ohttp` crate regardless of features.
+#[cfg(feature = "secp256k1")]
+use bitcoin_ohttp as ohttp;
+#[cfg(not(feature = "secp256k1"))]
+#[allow(clippy::single_component_path_imports)]
+use ohttp;
+
+#[cfg(all(feature = "secp256k1", target_arch = "wasm32"))]
+compile_error!("the `secp256k1` feature does not support wasm32 targets");
+
 pub use ohttp::KeyConfig;
 pub use url::Url;
 
@@ -91,10 +102,40 @@ pub const OHTTP_REQ_CONTENT_TYPE: &str = "message/ohttp-req";
 /// capabilities; unusable ones are skipped.
 pub fn parse_key_config(bytes: &[u8]) -> Result<KeyConfig, Error> {
     init();
-    KeyConfig::decode_list(bytes)?
+    let configs = KeyConfig::decode_list(bytes)?;
+    #[cfg(feature = "secp256k1")]
+    let configs: Vec<_> = configs.iter().filter_map(retain_chacha20poly1305).collect();
+    configs
         .into_iter()
         .find(has_usable_suite)
         .ok_or(Error::NoKeyConfig)
+}
+
+/// Re-decode `config` with only its HKDF-SHA256/ChaCha20Poly1305 suite, or
+/// `None` if it lacks one.
+///
+/// `bitcoin-ohttp` keeps AES-128-GCM suites that it cannot encapsulate with,
+/// and `ClientRequest::from_config` always uses the first suite.
+#[cfg(feature = "secp256k1")]
+fn retain_chacha20poly1305(config: &KeyConfig) -> Option<KeyConfig> {
+    use ohttp::hpke::{Aead, Kdf, Kem};
+
+    let suite = [
+        u16::from(Kdf::HkdfSha256).to_be_bytes(),
+        u16::from(Aead::ChaCha20Poly1305).to_be_bytes(),
+    ]
+    .concat();
+    // key_id | kem | pk | suites_len | suites
+    let encoded = config.encode().ok()?;
+    let header_len = 1 + 2 + Kem::K256Sha256.n_pk();
+    let suites = encoded.get(header_len + 2..)?;
+    if !suites.chunks_exact(4).any(|s| s == suite) {
+        return None;
+    }
+    let mut retained = encoded[..header_len].to_vec();
+    retained.extend_from_slice(&4u16.to_be_bytes());
+    retained.extend_from_slice(&suite);
+    KeyConfig::decode(&retained).ok()
 }
 
 /// Whether `config` kept at least one symmetric suite this build supports.
@@ -364,14 +405,18 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ohttp;
     use ohttp::hpke::{Aead, Kdf, Kem};
     use ohttp::SymmetricSuite;
 
     /// Every KEM `ohttp` implements, including the post-quantum X-Wing.
-    const SUPPORTED_KEMS: [Kem; 3] = [Kem::X25519Sha256, Kem::P256Sha256, Kem::XWing];
+    #[cfg(not(feature = "secp256k1"))]
+    const SUPPORTED_KEMS: &[Kem] = &[Kem::X25519Sha256, Kem::P256Sha256, Kem::XWing];
+    #[cfg(feature = "secp256k1")]
+    const SUPPORTED_KEMS: &[Kem] = &[Kem::K256Sha256];
 
     fn test_key_config() -> KeyConfig {
-        key_config_with_kem(Kem::X25519Sha256)
+        key_config_with_kem(SUPPORTED_KEMS[0])
     }
 
     fn key_config_with_kem(kem: Kem) -> KeyConfig {
@@ -534,7 +579,7 @@ mod tests {
 
     #[test]
     fn parse_key_config_accepts_every_supported_kem() {
-        for kem in SUPPORTED_KEMS {
+        for &kem in SUPPORTED_KEMS {
             let config = key_config_with_kem(kem);
             let encoded = KeyConfig::encode_list(&[&config]).unwrap();
             let parsed = parse_key_config(&encoded).unwrap();
@@ -544,7 +589,7 @@ mod tests {
 
     #[test]
     fn round_trips_with_every_supported_kem() {
-        for kem in SUPPORTED_KEMS {
+        for &kem in SUPPORTED_KEMS {
             let server = ohttp::Server::new(key_config_with_kem(kem)).unwrap();
             let client = test_client(server.config().clone());
 
@@ -671,5 +716,37 @@ mod tests {
                 known_length: 1
             }) if needed > 1
         ));
+    }
+
+    #[cfg(feature = "secp256k1")]
+    #[test]
+    fn parse_key_config_skips_aes_128_gcm_for_secp256k1() {
+        let server = ohttp::Server::new(test_key_config()).unwrap();
+        let chacha = server.config().encode().unwrap();
+        let header = &chacha[..chacha.len() - 6];
+        let with_suites = |aeads: &[Aead]| {
+            let mut config = header.to_vec();
+            config.extend_from_slice(&(4 * aeads.len() as u16).to_be_bytes());
+            for &aead in aeads {
+                config.extend_from_slice(&u16::from(Kdf::HkdfSha256).to_be_bytes());
+                config.extend_from_slice(&u16::from(aead).to_be_bytes());
+            }
+            config
+        };
+
+        // Alone, AES-128-GCM is unusable even though `bitcoin-ohttp` keeps it.
+        assert!(matches!(
+            parse_key_config(&encode_raw_list(&[with_suites(&[Aead::Aes128Gcm])])),
+            Err(Error::NoKeyConfig)
+        ));
+
+        // Listed ahead of ChaCha20Poly1305, it is dropped rather than selected.
+        let both = with_suites(&[Aead::Aes128Gcm, Aead::ChaCha20Poly1305]);
+        let parsed = parse_key_config(&encode_raw_list(&[both])).unwrap();
+        assert_eq!(parsed.encode().unwrap(), chacha);
+        let (req, _) = test_client(parsed)
+            .encapsulate("GET", "/", &[], &[], None)
+            .unwrap();
+        assert!(server.decapsulate(&req.body).is_ok());
     }
 }

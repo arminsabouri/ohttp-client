@@ -12,6 +12,13 @@ The client uses whichever KEM a gateway advertises, so it works with every KEM
 [`ohttp`](https://crates.io/crates/ohttp) implements: DHKEM(X25519, HKDF-SHA256),
 DHKEM(P-256, HKDF-SHA256), and X-Wing (ML-KEM-768 + X25519).
 
+The `secp256k1` feature swaps `ohttp` for
+[`bitcoin-ohttp`](https://crates.io/crates/bitcoin-ohttp), whose only KEM is
+DHKEM(secp256k1, HKDF-SHA256) with HKDF-SHA256 and ChaCha20Poly1305. With it
+enabled, gateways that advertise only other KEMs are rejected. This holds for
+every crate in the build that depends on `ohttp-client`, because Cargo unifies
+features. It is not supported on wasm32.
+
 ## Sans-IO by default
 
 By default the crate does **no network IO**. You encapsulate a request, send the
@@ -75,7 +82,7 @@ WASI targets need no extra feature.
 Common tasks are wrapped in the [`justfile`](justfile):
 
 ```sh
-just test          # cargo test --all-features
+just test          # cargo test, with and without secp256k1
 just check-wasm    # verify the wasm32 build
 just build-wasm    # build the web package into js/pkg/
 just test-js       # build wasm and run the JS e2e
@@ -85,7 +92,8 @@ just check         # full suite: fmt, clippy, tests, wasm, js e2e, audit
 Or directly with cargo:
 
 ```sh
-cargo test --all-features
+cargo test --features bitreq,harness,wasm   # ohttp
+cargo test --all-features                   # bitcoin-ohttp (secp256k1)
 cargo check --target wasm32-unknown-unknown --features wasm
 ```
 

@@ -12,14 +12,19 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Lint with clippy, treating warnings as errors, across all features.
+# Every feature except `secp256k1`, which swaps out the `ohttp` backend.
+OHTTP_FEATURES := "bitreq,harness,wasm"
+
+# Lint with clippy, treating warnings as errors, with each OHTTP backend.
 lint:
+    cargo clippy --all-targets --features {{OHTTP_FEATURES}} -- -D warnings
     cargo clippy --all-targets --all-features -- -D warnings
 
 clippy: lint
 
-# Run tests across all features.
+# Run tests with each OHTTP backend.
 test:
+    cargo test --features {{OHTTP_FEATURES}}
     cargo test --all-features
 
 # Verify the crate (including wasm-bindgen exports) builds for browsers.
